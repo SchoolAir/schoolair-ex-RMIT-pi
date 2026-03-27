@@ -6,9 +6,12 @@
 
 import { exec } from "child_process";
 
+// NOTE: To use the mock sensor, run `npm run dev:mock`
+const script = process.env.MOCK_SENSOR_SCRIPT ?? "./read-sensor.sh";
+
 export function readSensor(): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    exec("./read-sensor.sh", (error, stdout) => {
+    exec(script, (error, stdout) => {
       if (error) return reject(error);
       resolve(JSON.parse(stdout));
     });

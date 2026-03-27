@@ -11,6 +11,7 @@ async function run(): Promise<void> {
   try {
     const data = await readSensor();
     const breaches = checkThresholds(data);
+    // See data for debug
 
     for (const breach of breaches) {
       await fetch(`${process.env.SERVER_URL}/aqc/v1/alert`, {
