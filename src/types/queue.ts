@@ -1,4 +1,6 @@
-// Row shape for the local SQLite measurements queue
+/**
+ * Defines the structure of a measurement queued for sending to the central server.
+ */
 export interface QueuedMeasurement {
   id: number;
   data: string;        // JSON stringified sensor payload

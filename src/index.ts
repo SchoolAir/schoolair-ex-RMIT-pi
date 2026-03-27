@@ -4,24 +4,20 @@ import express from "express";
 import { startSnapshotJob } from "./jobs/snapshot";
 import { startIngestJob }   from "./jobs/ingest";
 import { startFlushJob }    from "./jobs/flushQueue";
-
-import sensorRoutes   from "./routes/sensor";
-import alertRoutes    from "./routes/alert";
-import snapshotRoutes from "./routes/snapshot";
+import { startAlertJob }    from "./jobs/alert";
 
 const app = express();
-app.use(express.json());
-
-app.use("/sensor", sensorRoutes);
-app.use("/sensor", alertRoutes);
-app.use("/sensor", snapshotRoutes);
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-// Start background jobs
+// TODO: in future when we add a dashboard/local ui for customisation,
+// we can add endpoints here to get queue status, recent measurements, etc.
+// i.e. app.use("/dashboard", dashboardRoutes);
+
 startSnapshotJob();
 startIngestJob();
 startFlushJob();
+startAlertJob();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {

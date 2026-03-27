@@ -1,16 +1,39 @@
+import { readSensor } from "../services/sensor";
 import { enqueue } from "../db/queue";
 
 /**
- * Reads the latest sensor data and POSTs to the central server ingest endpoint.
- * If the request fails, the measurement is saved to the local SQLite queue for retry.
+ * Reads sensor and POSTs to central server ingest endpoint.
+ * On failure, saves to local SQLite queue for retry.
  */
-export async function sendIngest(): Promise<void> {
-  // TODO: read sensor data and POST to ${process.env.SERVER_URL}/aqc/v1/ingest
-  // On failure: enqueue(JSON.stringify(sensorData), recorded_at)
+
+async function run(): Promise<void> {
+  const recorded_at = new Date().toISOString();
+
+  try {
+    const data = await readSensor();
+
+    const res = await fetch(`${process.env.SERVER_URL}/aqc/v1/ingest`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.AUTH_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ recorded_at, data })
+    });
+
+    if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+  } catch (err) {
+    console.error("Ingest failed, queuing for retry:", err);
+    const data = await readSensor().catch(() => ({}));
+    enqueue(JSON.stringify(data), recorded_at);
+  } finally {
+    const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
+    setTimeout(run, interval);
+  }
 }
 
 export function startIngestJob(): void {
   const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
-  setInterval(sendIngest, interval);
+  setTimeout(run, interval);
   console.log(`Ingest job started — running every ${interval / 1000}s`);
 }

@@ -2,9 +2,19 @@ import Database from "better-sqlite3";
 import path from "path";
 import { QueuedMeasurement } from "../types/queue";
 
+/**
+ * Manages the sqlite database for the measurements queue. 
+ * Provides functions to enqueue measurements, retrieve pending measurements, 
+ * update their status, and remove them after processing.
+ * Uses WAL journal mode for better concurrency and performance.
+ * On startup, resets any measurements for retry.
+ */
+
 const db = new Database(path.join(__dirname, "../../queue.db"));
 
-// Initialise the queue table if it doesn't exist
+db.pragma("journal_mode = WAL");
+
+// Init if not exists
 db.exec(`
   CREATE TABLE IF NOT EXISTS measurements_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12,6 +22,13 @@ db.exec(`
     recorded_at TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending'
   )
+`);
+
+// On boot, reset any rows stuck in 'sending' status back to 'pending' for retry
+db.exec(`
+  UPDATE measurements_queue
+  SET status = 'pending'
+  WHERE status = 'sending'
 `);
 
 export function enqueue(data: string, recorded_at: string): void {

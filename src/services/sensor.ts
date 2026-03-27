@@ -1,5 +1,9 @@
-// utils/sensor.ts
+/**
+ * Reads sensor data by executing an external script and parsing its JSON output.
+ */
+
 // TODO: actually get read script from Oded and adjust logic as needed
+
 import { exec } from "child_process";
 
 export function readSensor(): Promise<Record<string, unknown>> {
