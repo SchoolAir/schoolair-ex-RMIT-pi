@@ -3,16 +3,25 @@ Raspberry Pi client for the SchoolAir platform.
 
 ## Overview
 
-`src/` — Express backend
-- `index.ts` — entry point, mounts routes and starts background jobs
-- `db/queue.ts` — SQLite connection and queue helper functions
-- `jobs/snapshot.ts` — reads sensor and POSTs to central server every 5 minutes (fire and forget)
-- `jobs/ingest.ts` — reads sensor and POSTs to central server every 60 minutes (queues on failure)
-- `jobs/flushQueue.ts` — retries failed ingest entries every 30 minutes, batches if queue > 100
-- `routes/sensor.ts` — `POST /sensor/read` — collect a sensor reading
-- `routes/alert.ts` — `POST /sensor/alert` — check reading against thresholds, post alert if breached
-- `routes/snapshot.ts` — `POST /sensor/snapshot` — send latest reading to central server
+`src/`
+- `index.ts` — entry point, starts all background jobs
+- `db/queue.ts` — SQLite connection, WAL mode, queue helpers, boot cleanup
+- `jobs/alert.ts` — reads sensor every 60s, checks thresholds, POSTs to central server if breached
+- `jobs/snapshot.ts` — reads sensor every 5 mins, POSTs to central server (fire and forget)
+- `jobs/ingest.ts` — reads sensor every 60 mins, POSTs to central server (queues on failure)
+- `jobs/flushQueue.ts` — retries failed ingest entries every 30 mins, batches if queue > 100
+- `services/sensor.ts` — executes sensor shell script, returns parsed JSON
+- `services/threshold.ts` — checks sensor data against thresholds with global cooldown
 - `types/queue.ts` — TypeScript interface for queued measurement rows
+
+## How it works
+
+```
+Every 60s  → jobs/alert.ts      → readSensor() → checkThresholds() → POST /aqc/v1/alert if breached
+Every 5m   → jobs/snapshot.ts   → readSensor() → POST /aqc/v1/snapshot
+Every 60m  → jobs/ingest.ts     → readSensor() → POST /aqc/v1/ingest (queue if offline)
+Every 30m  → jobs/flushQueue.ts → drain SQLite queue → retry failed ingest POSTs
+```
 
 ## Setup
 
@@ -34,7 +43,7 @@ npm start
 
 ## Device Registration
 
-On first boot, register the Pi against an organisation using the central server:
+On first boot, register the Pi against an organisation:
 
 ```bash
 curl -X POST https://data.schoolair.org/aqc/register \
@@ -44,13 +53,3 @@ curl -X POST https://data.schoolair.org/aqc/register \
 ```
 
 Store the returned `auth_token` and `device_id` in `.env`.
-
-## How it works
-
-```
-Every 5 mins  → read sensor → POST /aqc/v1/snapshot   (live dashboard, fire and forget)
-Every 60 mins → read sensor → POST /aqc/v1/ingest     (historical data, queue if offline)
-Every 30 mins → drain queue → retry failed ingest POSTs
-                              < 100 entries → flush all
-                              ≥ 100 entries → flush 100, remainder next interval
-```
