@@ -11,6 +11,9 @@ async function run(): Promise<void> {
 
   try {
     const data = await readSensor();
+    // TODO: maybe we have a few types of read sensor where some for
+    // this job for instance sample a few times and average before
+    // sending to server, while others just read once and send raw data
 
     const res = await fetch(`${process.env.SERVER_URL}/aqc/v1/ingest`, {
       method: "POST",

@@ -14,6 +14,9 @@ Raspberry Pi client for the SchoolAir platform.
 - `services/threshold.ts` — checks sensor data against thresholds with global cooldown
 - `types/queue.ts` — TypeScript interface for queued measurement rows
 
+## Local Development
+See the [server repo README](https://github.com/agt-rmit-schoolair/server/blob/main/LOCAL_DEV.md) for full local setup instructions including database and device registration. Once done, copy `.env.example` to `.env`, fill in your `AUTH_TOKEN` and run `npm run dev:mock`.
+
 ## How it works
 
 ```
