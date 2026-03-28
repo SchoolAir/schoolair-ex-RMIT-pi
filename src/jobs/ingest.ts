@@ -25,7 +25,7 @@ async function run(): Promise<void> {
   } catch (err) {
     console.error("Ingest failed, queuing for retry:", err);
     const data = await readSensor().catch(() => ({}));
-    enqueue(JSON.stringify(data), recorded_at);
+    //enqueue(JSON.stringify(data), recorded_at);
   } finally {
     const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
     setTimeout(run, interval);
@@ -34,6 +34,7 @@ async function run(): Promise<void> {
 
 export function startIngestJob(): void {
   const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
+  console.log('interval: ', interval);
   setTimeout(run, interval);
   console.log(`Ingest job started — running every ${interval / 1000}s`);
 }

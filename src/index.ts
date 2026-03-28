@@ -6,9 +6,6 @@ import { startIngestJob }   from "./jobs/ingest";
 import { startFlushJob }    from "./jobs/flushQueue";
 import { startAlertJob }    from "./jobs/alert";
 
-//temp for testing
-import { readSensor } from "./services/sensor";
-
 const app = express();
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
@@ -17,17 +14,13 @@ app.get("/health", (_req, res) => res.json({ status: "ok" }));
 // we can add endpoints here to get queue status, recent measurements, etc.
 // i.e. app.use("/dashboard", dashboardRoutes);
 
-// test readSensor
-for (let i = 0; i < 30; i++) {
-  setTimeout(() => {
-    readSensor().then(console.log).catch(console.error);
-  }, i * 2000);
-}
+//startSnapshotJob();
 
-startSnapshotJob();
-startIngestJob();
-startFlushJob();
-startAlertJob();
+startIngestJob(); // while in dev just set INGEST_INTERVAL 
+// to a low value in .env to see it working without waiting an hour
+
+//startFlushJob();
+//startAlertJob();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
