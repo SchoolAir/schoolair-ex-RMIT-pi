@@ -4,3 +4,4 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+spike_state.json

@@ -24,10 +24,17 @@ async function run(): Promise<void> {
       body: JSON.stringify({ recorded_at, data })
     });
 
-    if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 401) {
+        console.error("Authentication failed. Check your AUTH_TOKEN.");
+        // in a real implementation, we might want to stop retrying if auth fails,
+        // or trigger a different flow to get new credentials
+      }
+      throw new Error(`Server responded with ${res.status}`);
+    }
+    
   } catch (err) {
     console.error("Ingest failed, queuing for retry:", err);
-    const data = await readSensor().catch(() => ({}));
     //enqueue(JSON.stringify(data), recorded_at);
   } finally {
     const interval = Number(process.env.INGEST_INTERVAL) || 3600000;

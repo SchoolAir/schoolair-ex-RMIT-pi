@@ -8,6 +8,7 @@ import { readSensor } from "../services/sensor";
 async function run(): Promise<void> {
   try {
     const data = await readSensor();
+    const recorded_at = new Date().toISOString();
 
     await fetch(`${process.env.SERVER_URL}/aqc/v1/snapshot`, {
       method: "POST",
@@ -15,7 +16,7 @@ async function run(): Promise<void> {
         "Authorization": `Bearer ${process.env.AUTH_TOKEN}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ data })
+      body: JSON.stringify({ recorded_at, data })
     });
   } catch {
     // Fire and forget — log but don't queue
