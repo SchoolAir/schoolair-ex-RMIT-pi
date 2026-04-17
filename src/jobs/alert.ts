@@ -1,3 +1,4 @@
+import { alertAction } from "../services/alertAction";
 import { readSensor } from "../services/sensor";
 import { checkThresholds, syncThresholds } from "../services/thresholds";
 
@@ -12,6 +13,8 @@ const interval = Number(process.env.ALERT_INTERVAL) || 60000;
 async function run(): Promise<void> {
   try {
     const data = await readSensor();
+    
+    await syncThresholds();
     const breaches = checkThresholds(data);
     // TODO: checks just once. We should check a few times to avoid false positives,
     // maybe average over a minute or so before firing an alert
@@ -21,17 +24,7 @@ async function run(): Promise<void> {
 
     // TODO: find way to change LED on device itself
 
-    if (breaches.length > 0) {
-        await syncThresholds();
-        await fetch(`${process.env.SERVER_URL}/aqc/v1/alert`, {
-          method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.AUTH_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(breaches)
-      });
-    }
+    if (breaches.length > 0) await alertAction(breaches);
 
   } catch (err) {
     console.error("Alert check failed:", err);
