@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 
-import { startSnapshotJob } from "./jobs/snapshot";
 import { startIngestJob }   from "./jobs/ingest";
 import { startFlushJob }    from "./jobs/flushQueue";
 import { startAlertJob }    from "./jobs/alert";
@@ -17,7 +16,6 @@ const app = express();
 //   })
 //   .catch(err => console.error("Initial threshold sync failed:", err));
 
-startSnapshotJob();
 startIngestJob(); 
 
 // startFlushJob(); // NOT DONE YET
