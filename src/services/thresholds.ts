@@ -64,8 +64,9 @@ let lastAlerted: number = 0;
 
 export function checkThresholds(data: Record<string, unknown>): ThresholdBreach[] {
   const cooldown = Number(process.env.ALERT_COOLDOWN) || 300000;
-  if (Date.now() - lastAlerted < cooldown) return [];
+
   // if within cooldown, skip checking
+  if (Date.now() - lastAlerted < cooldown) return [];
 
   const { thresholds } = loadLocal();
   const breaches: ThresholdBreach[] = [];
