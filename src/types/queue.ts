@@ -6,4 +6,5 @@ export interface QueuedMeasurement {
   data: string;        // JSON stringified sensor payload
   recorded_at: string; // ISO 8601 timestamp
   status: "pending" | "sending" | "failed";
+  retry_count: number; // number of retry attempts
 }

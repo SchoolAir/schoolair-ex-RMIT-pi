@@ -5,5 +5,6 @@ CREATE TABLE IF NOT EXISTS measurements_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     data        TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending'
+    status      TEXT NOT NULL DEFAULT 'pending',
+    retry_count INT NOT NULL DEFAULT 0
 );

@@ -7,44 +7,41 @@ import { enqueue } from "../db/queue";
  */
 
 async function run(): Promise<void> {
-  const recorded_at = new Date().toISOString();
+	const recorded_at = new Date().toISOString();
 
-  try {
-    const data = await readSensor();
-    // TODO: maybe we have a few types of read sensor where some for
-    // this job for instance sample a few times and average before
-    // sending to server, while others just read once and send raw data
+	try {
+		const data = await readSensor();
 
-    const res = await fetch(`${process.env.SERVER_URL}/aqc/v1/ingest`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.AUTH_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ recorded_at, data })
-    });
+		const res = await fetch(`${process.env.SERVER_URL}/aqc/v1/ingest`, {
+			method: "POST",
+			headers: {
+				"Authorization": `Bearer ${process.env.AUTH_TOKEN}`,
+				"Content-Type": "application/json"
+			},
+			body: JSON.stringify({ recorded_at, data })
+		});
 
-    if (!res.ok) {
-      if (res.status === 401) {
-        console.error("Authentication failed. Check your AUTH_TOKEN.");
-        // in a real implementation, we might want to stop retrying if auth fails,
-        // or trigger a different flow to get new credentials
-      }
-      throw new Error(`Server responded with ${res.status}`);
-    }
-    
-  } catch (err) {
-    console.error("Ingest failed, queuing for retry:", err);
-    //enqueue(JSON.stringify(data), recorded_at);
-  } finally {
-    const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
-    setTimeout(run, interval);
-  }
+		if (!res.ok) {
+			if (res.status === 401) {
+				console.error("Authentication failed. Check your AUTH_TOKEN.");
+				// in a real implementation, we might want to stop retrying if auth fails,
+				// or trigger a different flow to get new credentials
+			}
+			throw new Error(`Server responded with ${res.status}`);
+		}
+
+	} catch (err) {
+		console.error("Ingest failed, queuing for retry:", err);
+		//enqueue(JSON.stringify(data), recorded_at);
+	} finally {
+		const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
+		setTimeout(run, interval);
+	}
 }
 
 export function startIngestJob(): void {
-  const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
-  console.log('interval: ', interval);
-  setTimeout(run, interval);
-  console.log(`Ingest job started — running every ${interval / 1000}s`);
+	const interval = Number(process.env.INGEST_INTERVAL) || 3600000;
+	console.log('interval: ', interval);
+	setTimeout(run, interval);
+	console.log(`Ingest job started — running every ${interval / 1000}s`);
 }
