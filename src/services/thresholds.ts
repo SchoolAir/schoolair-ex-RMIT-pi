@@ -5,7 +5,7 @@
 
 import fs from "fs";
 
-const CONFIG_FILE = process.env.THRESHOLD_CONFIG || "./thresholds.json";
+const CONFIG_FILE = process.env.THRESHOLD_CONFIG || "./config/thresholds.json";
 
 // this is the structure of thresholds we get from central server and store locally
 interface Threshold {

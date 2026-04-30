@@ -5,3 +5,6 @@ dist/
 *.db-shm
 *.db-wal
 spike_state.json
+.venv/
+__pycache__/
+*.pyc
