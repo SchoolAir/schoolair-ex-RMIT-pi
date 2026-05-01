@@ -167,6 +167,7 @@ def run_registration():
             org_id=data["org_id"],
             site_id=data["site_id"],
         )
+        load_dotenv(override=True)
 
 def validate_token(token: str) -> bool:
     """Check if current auth token is valid."""
