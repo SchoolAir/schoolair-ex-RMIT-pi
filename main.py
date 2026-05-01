@@ -1,8 +1,7 @@
 """main.py
 
 Entrypoint. Validates registration then starts:
-  - Ingest job (reads sensors, posts measurements to server)
-  - Alert job  (checks thresholds, fires alerts)
+  - Ingest job (reads sensors, checks alerts & posts measurements)
   - Microdot   (local web server for on-device status page)
 """
 
@@ -12,7 +11,6 @@ from dotenv import load_dotenv
 from microdot import Microdot, Response
 from setup import ensure_registered
 from jobs.ingest import ingest_loop
-# from jobs.alert import alert_loop
 
 load_dotenv()
 
@@ -40,14 +38,13 @@ async def index(request):
 async def main():
     await asyncio.gather(
         ingest_loop(),
-        # alert_loop(),
         app.start_server(host="0.0.0.0", port=PORT, debug=False),
     )
  
  
 if __name__ == "__main__":
     try:
-        ensure_registered()  # sync — runs before event loop starts
+        ensure_registered()
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nShutting down.")
