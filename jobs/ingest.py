@@ -9,7 +9,7 @@ readings are fresh enough for meaningful alerting.
 import asyncio
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time
 from pathlib import Path
 import httpx
 from dotenv import load_dotenv
@@ -19,17 +19,90 @@ import db.queue as queue
 load_dotenv()
 
 SERVER_URL          = os.getenv("SERVER_URL", "").rstrip("/")
-INTERVAL            = int(os.getenv("INGEST_INTERVAL", 60))       # seconds
 ALERT_CONFIDENCE    = int(os.getenv("ALERT_CONFIDENCE", 3))       # consecutive breaches to confirm alert
 ALERT_COOLDOWN_HRS  = float(os.getenv("ALERT_COOLDOWN_HOURS", 1)) # hours between alerts per metric
 QUEUE_ALERT_SKIP    = int(os.getenv("QUEUE_ALERT_SKIP", 50))      # queue depth above which alert checking is skipped
 
 CRITERIA_PATH = Path("config/criteria.json")
+SETTINGS_PATH = Path("config/settings.json")
 
+DEFAULT_SETTINGS = {
+    "interval_active": 60,
+    "interval_idle": 300,
+    "active_window": {"start": "07:00", "end": "16:00"},
+}
+
+MAX_ACTIVE_HOURS = 9  # check to prevent creating long active windows
 BATCH_SIZE = 100  # hard limit (central server rejects anything over this)
 
 breach_counts:  dict[str, int]      = {}  # metric -> consecutive breach count
 alert_cooldown: dict[str, datetime] = {}  # metric -> datetime last alert was sent
+
+
+# --------------------------- Settings storage ---------------------------
+
+
+def _parse_hhmm(hhmm: str) -> time:
+    h, m = map(int, hhmm.split(":"))
+    return time(h, m)
+
+
+def _window_hours(window: dict) -> float:
+    start, end = _parse_hhmm(window["start"]), _parse_hhmm(window["end"])
+    s = start.hour + start.minute / 60
+    e = end.hour + end.minute / 60
+    return (e - s) % 24
+
+
+def load_settings() -> dict:
+    """Load settings.json, falling back to defaults if missing/malformed."""
+    if not SETTINGS_PATH.exists():
+        print("settings.json not found — using defaults")
+        return DEFAULT_SETTINGS
+    try:
+        return json.loads(SETTINGS_PATH.read_text())
+    except json.JSONDecodeError:
+        print("settings.json is malformed — using defaults")
+        return DEFAULT_SETTINGS
+
+
+def validate_settings(settings: dict):
+    """Fail loud at startup if the active window is too long."""
+    hours = _window_hours(settings["active_window"])
+    if hours > MAX_ACTIVE_HOURS:
+        raise SystemExit(
+            f"Config error: active window is {hours:.1f}h, "
+            f"max allowed is {MAX_ACTIVE_HOURS}h. Edit config/settings.json."
+        )
+
+
+def current_interval(settings: dict, now: time | None = None) -> int:
+    """Return the active rate if now is inside the window, else idle."""
+    if now is None:
+        now = datetime.now().time()  # local time, Pi timezone must be correct
+    w = settings["active_window"]
+    start, end = _parse_hhmm(w["start"]), _parse_hhmm(w["end"])
+    if start <= end:
+        # Regular window i.e. 08:00 -> 18:00
+        # 
+        # 00:00 -- 07:00 ====== 16:00 -- 23:59
+        #                ACTIVE
+        #
+        #   now >= 08:00
+        #   AND 
+        #   now < 18:00
+        active = start <= now < end
+    else:
+        # Window crosses midnight i.e 22:00 -> 06:00
+        #
+        # 0 ===== 6 ----------- 22 ===== 24
+        #  ACTIVE                  ACTIVE
+        #
+        #   now >= 22:00
+        #   OR
+        #   now < 06:00
+        active = (now >= start) or (now < end)  # window crosses midnight
+    return settings["interval_active"] if active else settings["interval_idle"]
 
 
 # --------------------------- Criteria storage ---------------------------
@@ -233,11 +306,17 @@ async def _drain(client: httpx.AsyncClient, criteria: list[dict]):
 async def ingest_loop():
     """Queues readings, drains to server in a batch, checks alerts when fresh."""
     queue.init()
-    print(f"Ingest job started — running every {INTERVAL}s")
+    settings = load_settings()
+    validate_settings(settings)
+    print(
+        f"Ingest job started — active {settings['active_window']['start']}"
+        f"–{settings['active_window']['end']} "
+        f"({settings['interval_active']}s active / {settings['interval_idle']}s idle)"
+    )
 
     while True:
         await _run_ingest()
-        await asyncio.sleep(INTERVAL)
+        await asyncio.sleep(current_interval(settings))
 
 
 async def _run_ingest():
