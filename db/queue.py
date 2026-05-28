@@ -17,6 +17,7 @@ def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
     return con
 
 
@@ -66,16 +67,21 @@ def count_pending() -> int:
         return row["count"]
 
 
-def set_status(id: int, status: str):
-    """Update the status of a queued measurement."""
+def set_status_many(ids: list[int], status: str):
+    if not ids:
+        return
     with _connect() as con:
-        con.execute(
+        con.executemany(
             "UPDATE measurements_queue SET status = ? WHERE id = ?",
-            (status, id)
+            [(status, id) for id in ids]
         )
+        
 
-
-def remove(id: int):
-    """Delete a successfully sent measurement from the queue."""
+def remove_many(ids: list[int]):
+    if not ids:
+        return
     with _connect() as con:
-        con.execute("DELETE FROM measurements_queue WHERE id = ?", (id,))
+        con.executemany(
+            "DELETE FROM measurements_queue WHERE id = ?",
+            [(id,) for id in ids]
+        )

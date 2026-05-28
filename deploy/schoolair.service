@@ -1,0 +1,15 @@
+[Unit]
+Description=SchoolAir sensor ingest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/schoolair
+ExecStart=/home/pi/schoolair/.venv/bin/python /home/pi/schoolair/run.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -260,8 +260,8 @@ async def _drain(client: httpx.AsyncClient, criteria: list[dict]):
 
     pending = queue.get_pending(limit=BATCH_SIZE)
 
-    for row in pending:
-        queue.set_status(row["id"], "sending")
+    ids = [row["id"] for row in pending]
+    queue.set_status_many(ids, "sending")
 
     measurements = [
         {"recorded_at": row["recorded_at"], "data": json.loads(row["data"])}
@@ -280,8 +280,7 @@ async def _drain(client: httpx.AsyncClient, criteria: list[dict]):
     try:
         response = await _post_batch(client, measurements)
 
-        for row in pending:
-            queue.remove(row["id"])
+        queue.remove_many(ids)
 
         if response.get("criteria"):
             save_criteria(response["criteria"])
@@ -292,13 +291,10 @@ async def _drain(client: httpx.AsyncClient, criteria: list[dict]):
             await send_alerts(client, confirmed_alerts)
 
     except httpx.ConnectError:
-        for row in pending:
-            queue.set_status(row["id"], "pending")
+        queue.set_status_many(ids, "pending")
         print("  Lost connection during drain — will retry next cycle")
     except httpx.HTTPStatusError:
-        for row in pending:
-            queue.set_status(row["id"], "pending")
-
+        queue.set_status_many(ids, "pending")
 
 # --------------------------- Main ingest loop ---------------------------
 
