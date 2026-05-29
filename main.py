@@ -9,7 +9,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from microdot import Microdot, Response
-from setup import ensure_registered
+from setup import check_registration
 from jobs.ingest import ingest_loop
 
 load_dotenv()
@@ -41,10 +41,11 @@ async def main():
         app.start_server(host="0.0.0.0", port=PORT, debug=False),
     )
  
- 
 if __name__ == "__main__":
+    if not check_registration():
+        raise SystemExit(1)
     try:
-        ensure_registered()
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nShutting down.")
+ 

@@ -8,3 +8,6 @@ spike_state.json
 .venv/
 __pycache__/
 *.pyc
+
+# deployment artifacts
+schoolair-dev.service

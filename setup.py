@@ -1,11 +1,12 @@
 """setup.py
 
-Handles registration and setup for the pi.
+Device commissioning and registration.
 
-This module handles:
-- Validate auth token
-- Registration
-- Re-registration
+Run manually to register a device:   python -m setup
+
+Also exposes check_registration(), a NON-interactive gate used by main.py
+under systemd. It never prompts, and treats an unreachable server as
+"proceed" so the ingest loop can start and queue locally.
 """
 
 import os
@@ -14,15 +15,14 @@ import json
 import uuid
 import httpx
 import questionary
-import netifaces
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
 SERVER_URL = os.getenv("SERVER_URL", "").rstrip("/")
-IDENTITY_PATH = Path("config/identity.json")
 ENV_PATH = Path(".env")
+HTTP_TIMEOUT = 10
 
 # ----------------------- Helpers -----------------------
 
@@ -51,45 +51,15 @@ def write_env_token(token: str):
     else:
         content += f"\nAUTH_TOKEN={token}\n"
     ENV_PATH.write_text(content)
-
-
-def write_identity(device_id: int, asset_id: int, org_id: int, site_id: int):
-    """Persist device identity to config/identity.json."""
-    IDENTITY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    identity = {
-        "device": {
-            "device_id": device_id,
-            "asset_id": asset_id,
-        },
-        "locale": {
-            "org_id": org_id,
-            "site_id": site_id,
-        }
-    }
-    IDENTITY_PATH.write_text(json.dumps(identity, indent=4))
-
-
-def load_identity() -> dict | None:
-    """Load identity.json, returning None if missing or malformed."""
-    if not IDENTITY_PATH.exists():
-        return None
-    try:
-        return json.loads(IDENTITY_PATH.read_text())
-    except json.JSONDecodeError:
-        return None
-
-
-def identity_is_complete(identity: dict) -> bool:
-    """Check all required fields are present and non-empty."""
-    try:
-        return all([
-            identity["device"]["device_id"],
-            identity["device"]["asset_id"],
-            identity["locale"]["org_id"],
-            "site_id" in identity["locale"], # Value can be None
-        ])
-    except KeyError:
-        return False
+    
+def validate_token(token: str) -> bool:
+    """Check with the server whether the provided token is valid."""
+    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
+        res = client.get(
+            f"{SERVER_URL}/aqc/v1/validate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return res.is_success
 
 
 # ----------------------- Registration flow -----------------------
@@ -139,7 +109,7 @@ def run_registration():
         "Content-Type": "application/json",
     }
 
-    with httpx.Client(timeout=10) as client:
+    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
         res = client.post(
             f"{SERVER_URL}/aqc/v1/register",
             headers=auth_headers,
@@ -148,7 +118,6 @@ def run_registration():
                 "nickname": device_name,
                 "username": username,
                 "password": password,
-                # One of these will be None (register v re-register)
                 "asset_id": asset_id,
                 "new_asset": new_asset,
             },
@@ -161,60 +130,36 @@ def run_registration():
         print(f"\n{data.get('message', 'Registered successfully!')}\n")
 
         write_env_token(data["auth_token"])
-        write_identity(
-            device_id=data["device_id"],
-            asset_id=data["asset_id"],
-            org_id=data["org_id"],
-            site_id=data["site_id"],
-        )
         load_dotenv(override=True)
 
-def validate_token(token: str) -> bool:
-    """Check if current auth token is valid."""
-    try:
-        with httpx.Client(timeout=10) as client:
-            res = client.get(
-                f"{SERVER_URL}/aqc/v1/validate",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            return res.is_success
-    except httpx.ConnectError:
-        print("Could not reach server: check your connection.")
-        raise SystemExit(1)
 
+# -------------------- Headless gate (used by main.py) --------------------
 
-# ----------------------- Entry point (called in main.py) -----------------------
+def check_registration() -> bool:
+    """Non-interactive startup gate. No prompts (safe under systemd).
 
-def ensure_registered():
-    """
-    Validate existing auth token, or run registration if missing/invalid.
-    Exits the process if something is unrecoverable.
+    Returns False (caller should exit) if there's no token or the server
+    actively rejects it. Returns True if the token is valid OR the server
+    is merely unreachable — in the unreachable case the ingest loop starts
+    anyway and queues readings locally until the server returns.
     """
     token = os.getenv("AUTH_TOKEN", "").strip()
- 
-    if token and validate_token(token):
-        identity = load_identity()
-        if not identity or not identity_is_complete(identity):
-            print("Warning: identity.json is missing or incomplete. Please re-register.")
-        else:
-            # Token valid. Show startup menu
-            choice = questionary.select(
-                "SchoolAir — what would you like to do?",
-                choices=[
-                    {"name": "Start up normally", "value": "startup"},
-                    {"name": "Re-register this device", "value": "reregister"},
-                ]
-            ).ask()
- 
-            if choice == "startup":
-                return
-            # else fall through to registration below
- 
-    elif token:
-        print("Token invalid or expired, please re-register.")
-    else:
-        print("Auth token missing, please register.")
- 
+    if not token:
+        print("(err) No AUTH_TOKEN - Register with: `python -m setup`")
+        return False
+    try:
+        if not validate_token(token):
+            print("(err) Token rejected by server — Re-register: `python -m setup`")
+            return False
+        return True
+    except httpx.ConnectError:
+        print("(warn) Server unreachable. Starting anyway - readings will queue locally.")
+        return True
+
+
+# ----------------------- Manual entry point -----------------------
+
+if __name__ == "__main__":
     try:
         run_registration()
     except RuntimeError as e:

@@ -7,9 +7,10 @@ Wants=network-online.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/schoolair
-ExecStart=/home/pi/schoolair/.venv/bin/python /home/pi/schoolair/run.py
+ExecStart=/home/pi/schoolair/.venv/bin/python -u /home/pi/schoolair/main.py
 Restart=on-failure
 RestartSec=10
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
