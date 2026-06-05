@@ -45,6 +45,19 @@ python -m setup
 
 ---
 
+## Unit Testing
+
+Navigate to the root of the pi repository directory and run the
+following command.
+
+```bash
+# Make sure in virtual environment
+source .venv/bin/activate
+python -m pytest
+```
+
+---
+
 ## Running (development)
 
 ```bash
@@ -159,7 +172,9 @@ pi/
 ├── services/
 │   └── sensor.py           # Executes sensor script, flattens output to known fields + raw payload
 │
-├── tests/                  # pytest suite
+├── tests/jobs              # pytest suite
+│   ├── test_aggregate.py   
+│   └── test_ingest.py           
 │
 ├── main.py                 # Entrypoint — runs check_registration() then ingest job + Microdot
 ├── setup.py                # Registration tool (python -m setup) and headless startup gate

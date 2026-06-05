@@ -34,7 +34,7 @@ DEFAULT_SETTINGS = {
 }
 
 MAX_ACTIVE_HOURS = 9  # check to prevent creating long active windows
-BATCH_SIZE = 100  # hard limit (central server rejects anything over this)
+BATCH_SIZE = 500  # hard limit (central server rejects anything over this)
 
 breach_counts:  dict[str, int]      = {}  # metric -> consecutive breach count
 alert_cooldown: dict[str, datetime] = {}  # metric -> datetime last alert was sent
@@ -255,38 +255,58 @@ async def _drain(client: httpx.AsyncClient, criteria: list[dict]):
     if not depth:
         return
 
+    # Hard cap: if downsampling alone hasn't bounded the queue, drop
+    # oldest aggregated rows before shipping.
+    if depth > aggregate.MAX_QUEUE_ROWS:
+        dropped = queue.trim_aggregated(depth - aggregate.QUEUE_LOW_WATER)
+        if dropped:
+            print(f"Queue over cap — discarded {dropped} oldest aggregated row(s)")
+            depth -= dropped
+
     check_alerts = depth < QUEUE_ALERT_SKIP
     if not check_alerts:
         print(f"Queue large ({depth} pending) — alert checking skipped")
 
-    pending = queue.get_pending(limit=BATCH_SIZE)
+    pending_rows = queue.get_pending(limit=BATCH_SIZE)
 
-    ids = [row["id"] for row in pending]
+    ids = [row["id"] for row in pending_rows]
     queue.set_status_many(ids, "sending")
 
-    measurements = [
-        {"recorded_at": row["recorded_at"], "data": json.loads(row["data"])}
-        for row in pending
+    # Build the outbound API payload
+    payload = [
+        {
+            "recorded_at": row["recorded_at"],
+            "data": json.loads(row["data"]),
+            "is_aggregated": bool(row["is_aggregated"]),
+        }
+        for row in pending_rows
     ]
 
-    # Run alert checking over the batch rows before we send
+     # Run alert checking over fresh, non-aggregated rows before sending.
     confirmed_alerts = []
     if check_alerts:
-        for row, measurement in zip(pending, measurements):
-            alerts = check_reading(measurement["data"], criteria, row["recorded_at"])
+        for measurement in payload:
+            if measurement["is_aggregated"]:
+                continue
+
+            alerts = check_reading(
+                measurement["data"],
+                criteria,
+                measurement["recorded_at"],
+            )
             confirmed_alerts.extend(alerts)
 
-    print(f"Draining {len(pending)} measurement(s)...")
+    print(f"Draining {len(payload)} measurement(s)...")
 
     try:
-        response = await _post_batch(client, measurements)
+        response = await _post_batch(client, payload)
 
         queue.remove_many(ids)
 
         if response.get("criteria"):
             save_criteria(response["criteria"])
 
-        print(f"  Sent {response.get('count', len(pending))} measurement(s)")
+        print(f"  Sent {response.get('count', len(pending_rows))} measurement(s)")
 
         if confirmed_alerts:
             await send_alerts(client, confirmed_alerts)
@@ -313,7 +333,10 @@ async def ingest_loop():
 
     while True:
         await _run_ingest()
-        await asyncio.sleep(current_interval(settings))
+        interval = current_interval(settings)
+        mode = "active" if interval == settings["interval_active"] else "idle"
+        print(f"[{mode}] next reading in {interval}s")
+        await asyncio.sleep(interval)
 
 
 async def _run_ingest():
@@ -332,7 +355,7 @@ async def _run_ingest():
     # 3. Load last known criteria (updated on successful drain)
     criteria = load_criteria()
     
-    # 3.5 Aggregate >14-day-old rows into 1hr buckets
+    # 4. Aggregate >14-day-old rows into 1hr buckets
     try:
         summary = aggregate.run_aggregation()
         if summary["buckets"]:
@@ -343,7 +366,8 @@ async def _run_ingest():
     except Exception as e:
         print(f"Aggregation failed: {e}")
 
-    # 4. Drain queue (slices of 100 max), alert checking if queue is small
+    # 5. Drain queue (slices of 500 max), alert checking if queue is small
+    #    Also handles trimming queue in case of extreme growth
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             await _drain(client, criteria)

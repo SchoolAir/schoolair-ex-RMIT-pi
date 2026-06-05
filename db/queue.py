@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 DB_PATH = Path("queue.db")
-DB_MAX_SEND = 100 # max rows returned from `get_pending`
+DB_MAX_SEND = 500 # max rows returned from `get_pending`
 
 
 def _connect() -> sqlite3.Connection:
@@ -111,6 +111,24 @@ def fold_bucket(keeper_id: int, data: dict, recorded_at: str, drop_ids: list[int
                 [(i,) for i in drop_ids]
             )
 
+
+def trim_aggregated(count: int) -> int:
+    """Delete up to `count` oldest aggregated rows. Never touches raw rows.
+    Returns the number actually deleted."""
+    if count <= 0:
+        return 0
+    with _connect() as con:
+        cur = con.execute(
+            """DELETE FROM measurements_queue
+               WHERE id IN (
+                   SELECT id FROM measurements_queue
+                   WHERE status = 'pending' AND is_aggregated = 1
+                   ORDER BY recorded_at ASC
+                   LIMIT ?
+               )""",
+            (count,)
+        )
+        return cur.rowcount
 
 
 def set_status_many(ids: list[int], status: str):

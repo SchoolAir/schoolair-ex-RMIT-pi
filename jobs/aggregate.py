@@ -28,6 +28,9 @@ AGGREGATE_AFTER_DAYS = 14
 # constantsince it's a bit of a niche config and not something 
 # we expect to change often or per-deployment
 
+MAX_QUEUE_ROWS = 10000  # guard against unbounded sqlite growth
+QUEUE_LOW_WATER = 9500  # ^when triggered, trim down to here
+
 METRIC_KEYS = {
     "temp": "float",
     "humidity": "float",
