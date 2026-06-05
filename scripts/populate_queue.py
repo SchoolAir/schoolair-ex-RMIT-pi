@@ -80,7 +80,7 @@ def main():
 
     # Insert oldest first so drain processes them in chronological order
     for i in range(COUNT, 0, -1):
-        offset = i * 5  # 5 seconds apart, going back in time
+        offset = i * 300  # 5 minutes apart, going back in time
         data, recorded_at = fake_reading(offset_seconds=offset)
         queue.enqueue(data, recorded_at)
 

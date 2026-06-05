@@ -29,9 +29,18 @@ def init():
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 data        TEXT NOT NULL,
                 recorded_at TEXT NOT NULL,
-                status      TEXT NOT NULL DEFAULT 'pending'
+                status      TEXT NOT NULL DEFAULT 'pending',
+                is_aggregated INTEGER NOT NULL DEFAULT 0
             )
         """)
+        
+        # Speeds up both get_pending and get_aggregatable, esp. during a long
+        # outage when the queue grows large.
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_queue_status_recorded
+            ON measurements_queue (status, recorded_at)
+        """)
+        
         # Reset rows stuck in 'sending' on last run back to 'pending'
         con.execute("""
             UPDATE measurements_queue
@@ -65,6 +74,43 @@ def count_pending() -> int:
             "SELECT COUNT(*) as count FROM measurements_queue WHERE status = 'pending'"
         ).fetchone()
         return row["count"]
+
+
+def get_aggregatable(before: str) -> list[sqlite3.Row]:
+    """Pending, not-yet-aggregated rows recorded before the given ISO timestamp.
+ 
+    Coarse pre-filter only: the caller applies the precise per-bucket cutoff.
+    """
+    with _connect() as con:
+        return con.execute(
+            """SELECT * FROM measurements_queue
+               WHERE status = 'pending' AND is_aggregated = 0 AND recorded_at < ?
+               ORDER BY recorded_at ASC""",
+            (before,)
+        ).fetchall()
+
+
+def fold_bucket(keeper_id: int, data: dict, recorded_at: str, drop_ids: list[int]):
+    """Atomically collapse one hourly bucket into a single aggregated row.
+ 
+    The earliest row in the bucket (`keeper_id`) is rewritten to hold the
+    aggregated data at the bucket-start timestamp and flagged is_aggregated;
+    the remaining rows (`drop_ids`) are deleted. Single transaction, so a
+    crash mid-fold leaves the bucket untouched rather than half-merged.
+    """
+    with _connect() as con:
+        con.execute(
+            """UPDATE measurements_queue
+               SET data = ?, recorded_at = ?, is_aggregated = 1
+               WHERE id = ?""",
+            (json.dumps(data), recorded_at, keeper_id)
+        )
+        if drop_ids: # might be only one row in the bucket, so check before
+            con.executemany(
+                "DELETE FROM measurements_queue WHERE id = ?",
+                [(i,) for i in drop_ids]
+            )
+
 
 
 def set_status_many(ids: list[int], status: str):

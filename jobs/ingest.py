@@ -15,6 +15,7 @@ import httpx
 from dotenv import load_dotenv
 from services.sensor import read_sensor
 import db.queue as queue
+import jobs.aggregate as aggregate
 
 load_dotenv()
 
@@ -330,6 +331,17 @@ async def _run_ingest():
 
     # 3. Load last known criteria (updated on successful drain)
     criteria = load_criteria()
+    
+    # 3.5 Aggregate >14-day-old rows into 1hr buckets
+    try:
+        summary = aggregate.run_aggregation()
+        if summary["buckets"]:
+            print(
+                f"Aggregated {summary['rows_in']} old row(s) into "
+                f"{summary['buckets']} hourly row(s)"
+            )
+    except Exception as e:
+        print(f"Aggregation failed: {e}")
 
     # 4. Drain queue (slices of 100 max), alert checking if queue is small
     try:
