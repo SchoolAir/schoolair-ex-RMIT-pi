@@ -1,0 +1,16 @@
+[Unit]
+Description=SchoolAir sensor ingest
+After=network-online.target sen6x.service
+Wants=network-online.target sen6x.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/schoolair
+ExecStart=/usr/bin/python3 -u /home/admin/schoolair/main.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

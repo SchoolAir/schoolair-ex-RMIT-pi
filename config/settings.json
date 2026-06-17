@@ -1,0 +1,7 @@
+{
+    "interval_read_active":  300,
+    "interval_read_idle":    900,
+    "interval_drain_active": 1800,
+    "interval_drain_idle":   7200,
+    "active_window": { "start": "07:00", "end": "16:00" }
+}

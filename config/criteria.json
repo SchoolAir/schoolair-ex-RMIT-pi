@@ -1,0 +1,20 @@
+[
+    {
+        "metric": "co2",
+        "threshold": "800",
+        "condition": "above",
+        "severity": "warning"
+    },
+    {
+        "metric": "pm25",
+        "threshold": "15",
+        "condition": "above",
+        "severity": "critical"
+    },
+    {
+        "metric": "temp",
+        "threshold": "30",
+        "condition": "above",
+        "severity": "warning"
+    }
+]

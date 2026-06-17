@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.env
+*.db
+*.db-shm
+*.db-wal
+spike_state.json
+.venv/
+__pycache__/
+*.pyc
+
+# deployment artifacts
+schoolair-dev.service
+
+# compiled C daemon binary (built on-device by deploy.sh)
+i2c/sen6x/sen6x_d
+i2c/sen6x/sen63c_d
+
+# test cache
+.pytest_cache/
