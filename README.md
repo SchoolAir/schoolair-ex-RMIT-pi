@@ -48,40 +48,37 @@ stack with no Node-RED dependency.
 ## Architecture
 
 ```
-   ┌─────────────────────────────────────────────────────┐
-   │  sen6x.service (C daemon)                           │
-   │  Reads I2C sensor every 60 s → sen6x.json           │
-   │  Responds to SIGUSR1 for on-demand reads            │
-   └───────────────────┬─────────────────────────────────┘
-                       │ read-sensor.sh
-   ┌───────────────────▼─────────────────────────────────┐
-   │  schoolair.service (main.py)                        │
-   │                                                     │
-   │  ┌─────────────────┐   ┌──────────────────────┐    │
-   │  │  _read_loop      │   │  _drain_loop          │    │
-   │  │  every 5/15 min  │   │  every 30 min/2 h     │    │
-   │  │                  │   │                       │    │
-   │  │  read sensor     │   │  POST buffer+SQLite   │    │
-   │  │  → _buffer[]     │   │  → server             │    │
-   │  │  breach? →       │   │  update criteria.json │    │
-   │  │  verify task     │   │  → _drain_alerts()    │    │
-   │  └─────────────────┘   └──────────────────────┘    │
-   │                                                     │
-   │  ┌───────────────────────────────────────────────┐  │
-   │  │  _verify_alert (background coroutine)         │  │
-   │  │  Stage 1: SIGUSR1 → read at T+10s, T+30s     │  │
-   │  │    avg < threshold  → patch buffer, stop      │  │
-   │  │    avg at/near      → Stage 2                 │  │
-   │  │  Stage 2: read at T+1m, T+2m                 │  │
-   │  │    avg < threshold  → log (fleeting)          │  │
-   │  │    avg at/near      → POST alert immediately  │  │
-   │  └───────────────────────────────────────────────┘  │
-   │                                                     │
-   │  Microdot HTTP server (port 8080)                   │
-   │  /            → dashboard.html                      │
-   │  /ws/sensors  → WebSocket (30 s push)               │
-   │  /re-register → starts schoolair-wizard.service     │
-   └─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  sen6x.service  (C daemon)                                  │
+│  reads I2C sensor every 60 s  →  sen6x.json                 │
+│  responds to SIGUSR1 for on-demand reads                    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ read-sensor.sh
+┌──────────────────────────▼──────────────────────────────────┐
+│  schoolair.service  (main.py)                               │
+├─────────────────────────────┬───────────────────────────────┤
+│  _read_loop  (5 / 15 min)   │  _drain_loop  (30 min / 2 h)  │
+│                             │                               │
+│  read sensor                │  POST _buffer + SQLite        │
+│  append to _buffer          │    to server                  │
+│  threshold breach?          │  update criteria.json         │
+│    → start _verify_alert    │  drain _alert_buffer          │
+├─────────────────────────────┴───────────────────────────────┤
+│  _verify_alert  (background task, per breaching metric)     │
+│                                                             │
+│  Stage 1  T+10s, T+30s  (SIGUSR1 triggers fresh reads)      │
+│    avg below threshold  →  patch buffer entry, stop         │
+│    avg at / near        →  proceed to Stage 2               │
+│                                                             │
+│  Stage 2  T+1m, T+2m                                        │
+│    avg below threshold  →  log as fleeting event            │
+│    avg at / near        →  POST alert immediately           │
+├─────────────────────────────────────────────────────────────┤
+│  Microdot HTTP  (port 8080)                                 │
+│  /             →  dashboard.html                            │
+│  /ws/sensors   →  WebSocket live readings  (30 s push)      │
+│  /re-register  →  starts schoolair-wizard.service           │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Storage lifecycle
