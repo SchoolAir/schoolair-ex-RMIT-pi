@@ -111,7 +111,21 @@ Alert fired (Stage 2 persistent)
 
 ## First-time deployment
 
-Run once on the Pi after rsyncing this repo to `/home/admin/schoolair/`:
+### Fresh Pi (curl installer)
+
+On a freshly flashed Raspberry Pi OS Lite (Bookworm), run as root:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/agt-rmit-schoolair/pi/integration/schoolair_setup.sh | sudo bash
+```
+
+This single command handles everything: clones the repo to `/home/admin/schoolair/`,
+installs all dependencies, builds the daemon, configures the hotspot and DNS, installs
+and enables all systemd services. Safe to re-run — hostname and `.env` are preserved.
+
+### Developer update (rsync workflow)
+
+After rsyncing changes to `/home/admin/schoolair/`, run:
 
 ```bash
 bash /home/admin/schoolair/deploy/deploy.sh
@@ -240,11 +254,12 @@ schoolair-pi/
 │   └── queue.py                        # SQLite queues: measurements + alerts
 │
 ├── deploy/
-│   ├── deploy.sh                       # Full deployment script (run once on Pi)
+│   ├── deploy.sh                       # Developer update script (rsync workflow)
 │   ├── sen6x.service                   # systemd: C daemon
 │   ├── schoolair.service               # systemd: main telemetry service
 │   ├── schoolair-launcher.service      # systemd: boot-time registration gate
 │   ├── schoolair-wizard.service        # systemd: browser registration wizard
+│   ├── schoolair-first-boot.service    # systemd: one-shot hostname assignment on first clone boot
 │   └── schoolair-dev.service.example   # Development (user) service template
 │
 ├── jobs/
@@ -280,6 +295,12 @@ schoolair-pi/
 ├── setup.py                            # Token validation at startup
 ├── migrate_token.py                    # Migrates auth token from old wizard format
 ├── read-sensor.sh                      # Wraps daemon JSON for sensor.py
+├── schoolair_setup.sh                  # Fresh-Pi installer (curl | sudo bash)
+├── prepare_image.sh                    # Golden image prep (strips device identity)
+├── first_boot.sh                       # Deployed to ~/; assigns hostname on first clone boot
+├── set_hostname.sh                     # Deployed to ~/; generates/applies schoolair-* hostname
+├── add_wifi.sh                         # Deployed to ~/; pre-stores a WiFi profile in NM
+├── version_check.py                    # Deployed to ~/; `schoolair` CLI command
 ├── pi-schema.sql                       # SQLite schema reference
 ├── requirements.txt                    # Python dependencies
 ├── pyproject.toml                      # Project + pytest config
