@@ -32,15 +32,16 @@ MAX_QUEUE_ROWS = 10000  # guard against unbounded sqlite growth
 QUEUE_LOW_WATER = 9500  # ^when triggered, trim down to here
 
 METRIC_KEYS = {
-    "temp": "float",
+    "temp":     "float",
     "humidity": "float",
-    "pm10": "float",
-    "pm25": "float",
-    "pm40": "float",
-    "pm100": "float",
-    "co2": "int",
-    "voc": "float",
-    "no2": "float",
+    "pm10":     "float",
+    "pm25":     "float",
+    "pm40":     "float",
+    "pm100":    "float",
+    "co2":      "int",
+    "voc":      "float",
+    "nox":      "float",
+    "no2":      "float",
 }
 # TODO: probably need a place to centralise this info but fine for now
 
@@ -53,7 +54,7 @@ def _bucket_start(recorded_at: str) -> datetime:
 
 
 def _mean_data(readings: list[dict]) -> dict:
-    """Average known sensor metrics only. Drops raw sensor frames."""
+    """Average known sensor metrics. Handles both nested (raw) and flat (aggregated) readings."""
     out = {}
 
     for key, kind in METRIC_KEYS.items():

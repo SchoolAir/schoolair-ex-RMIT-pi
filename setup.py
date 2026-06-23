@@ -138,23 +138,21 @@ def run_registration():
 def check_registration() -> bool:
     """Non-interactive startup gate. No prompts (safe under systemd).
 
-    Returns False (caller should exit) if there's no token or the server
-    actively rejects it. Returns True if the token is valid OR the server
-    is merely unreachable — in the unreachable case the ingest loop starts
-    anyway and queues readings locally until the server returns.
+    Returns False only when AUTH_TOKEN is absent — the device cannot send data
+    without a token. Any server-side validation failures (including 404 if the
+    /validate endpoint doesn't exist) are treated as warnings so the ingest loop
+    can start and queue readings locally.
     """
     token = os.getenv("AUTH_TOKEN", "").strip()
     if not token:
-        print("(err) No AUTH_TOKEN - Register with: `python -m setup`")
+        print("(info) No AUTH_TOKEN — readings will buffer locally until registration completes")
         return False
     try:
         if not validate_token(token):
-            print("(err) Token rejected by server — Re-register: `python -m setup`")
-            return False
-        return True
-    except httpx.ConnectError:
-        print("(warn) Server unreachable. Starting anyway - readings will queue locally.")
-        return True
+            print("(warn) Token validation returned non-2xx — starting anyway")
+    except Exception:
+        print("(warn) Could not reach server for token validation — starting anyway")
+    return True
 
 
 # ----------------------- Manual entry point -----------------------
