@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SchoolAir — Air Quality</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+    }
+
+    .card {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      max-width: 500px;
+      width: 100%;
+      padding: 30px;
+      margin-top: 10px;
+    }
+
+    h1 { color: #333; font-size: clamp(20px, 5vw, 26px); margin-bottom: 4px; }
+
+    .subtitle { color: #666; font-size: 14px; margin-bottom: 22px; }
+
+    .metric {
+      background: #f9fafb;
+      border: 2px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 15px;
+      margin-bottom: 12px;
+    }
+
+    .metric-label {
+      color: #666;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .metric-value {
+      color: #333;
+      font-size: clamp(28px, 9vw, 42px);
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .metric-value.warn { color: #ef4444; }
+
+    .sync-line {
+      color: #666;
+      font-size: 13px;
+      margin: 14px 0 10px;
+    }
+
+    .message {
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      background: #fee2e2;
+      color: #991b1b;
+      border: 1px solid #ef4444;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      flex: 1;
+      min-width: 120px;
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+      transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+      display: inline-block;
+    }
+
+    .btn:hover {
+      background: #5568d3;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102,126,234,0.4);
+    }
+
+    .btn:active { transform: translateY(0); }
+
+    .btn.secondary {
+      background: #6b7280;
+    }
+    .btn.secondary:hover {
+      background: #4b5563;
+      box-shadow: 0 4px 12px rgba(107,114,128,0.4);
+    }
+    @keyframes sa-spin { to { transform: rotate(360deg); } }
+  </style>
+  <script defer src="/static/alpine.min.js"></script>
+</head>
+<body x-data="dashboard()">
+  <div class="card">
+    <h1>🌿 SchoolAir — Air Quality</h1>
+    <p class="subtitle" x-text="nickname ? nickname : 'Air quality monitor'"></p>
+
+    <div class="message" x-show="registered === false">
+      ⚠️ This device is not registered. Cloud uploads are disabled.
+      <a href="#" @click.prevent="reRegister()" style="color:#991b1b;font-weight:600"> Register now →</a>
+    </div>
+
+    <div class="metric">
+      <div class="metric-label">🌡️ Temperature</div>
+      <div class="metric-value" x-text="temp !== null ? temp.toFixed(1) + ' °C' : '—'"></div>
+    </div>
+
+    <div class="metric">
+      <div class="metric-label">🌫️ Fine Particles (PM2.5)</div>
+      <div class="metric-value" :class="pm25 !== null && pm25 > 30 ? 'warn' : ''"
+           x-text="pm25 !== null ? pm25.toFixed(1) + ' µg/m³' : '—'"></div>
+    </div>
+
+    <div class="sync-line" x-show="lastSync">
+      🕐 Last update: <span x-text="lastSync"></span>
+    </div>
+
+    <div class="btn-row">
+      <a href="#" :class="'btn ' + (registered ? 'secondary' : '')"
+         @click.prevent="reRegister()"
+         x-text="registered ? '📋 Re-register' : '📋 Register Device'"></a>
+    </div>
+  </div>
+
+  <div x-show="wizardLoading"
+       style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+                background:#fff;border-radius:16px;padding:2rem 1.5rem;
+                text-align:center;max-width:280px;width:90%;
+                box-shadow:0 8px 32px rgba(0,0,0,.25)">
+      <div style="border:4px solid #e5e7eb;border-top-color:#667eea;border-radius:50%;
+                  width:2.5rem;height:2.5rem;animation:sa-spin .8s linear infinite;
+                  margin:0 auto 1.25rem"></div>
+      <p style="color:#374151;font-weight:600">The wizard will arrive in a few seconds.</p>
+    </div>
+  </div>
+
+  <script>
+    function dashboard() {
+      return {
+        temp:          null,
+        pm25:          null,
+        lastSync:      '',
+        registered:    true,
+        nickname:      '',
+        wizardLoading: false,
+
+        init() {
+          this.connect();
+        },
+
+        connect() {
+          const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+          const ws = new WebSocket(`${proto}://${location.host}/ws/sensors`);
+
+          ws.onmessage = (e) => {
+            const d = JSON.parse(e.data);
+            this.temp       = d.temp       ?? null;
+            this.pm25       = d.pm25       ?? null;
+            this.registered = d.registered ?? true;
+            this.nickname   = d.nickname   || '';
+            if (d.sent_at) {
+              this.lastSync = new Date(d.sent_at).toLocaleTimeString();
+            }
+          };
+
+          ws.onclose = () => setTimeout(() => this.connect(), 3000);
+        },
+
+        async reRegister() {
+          try {
+            const resp = await fetch('/re-register', { method: 'POST' });
+            const data = await resp.json();
+            if (!data.url) { alert('Wizard failed to start — try restarting schoolair-wizard manually.'); return; }
+            if (data.already_up) { location.href = data.url; return; }
+            this.wizardLoading = true;
+            this._pollWizard(data.url);
+          } catch {
+            alert('Could not reach the device. Check that the telemetry service is running.');
+          }
+        },
+
+        async _pollWizard(url) {
+          const deadline = Date.now() + 12000;
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 1200));
+            try {
+              const ctrl = new AbortController();
+              const tid = setTimeout(() => ctrl.abort(), 2500);
+              const r = await fetch(url + 'status.json', { cache: 'no-store', signal: ctrl.signal });
+              clearTimeout(tid);
+              if (r.ok) { location.href = url; return; }
+            } catch { /* wizard not yet up */ }
+          }
+          location.href = url;  // hard redirect after 12 s regardless
+        },
+      };
+    }
+  </script>
+</body>
+</html>
