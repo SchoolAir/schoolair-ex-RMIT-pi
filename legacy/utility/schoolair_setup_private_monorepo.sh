@@ -3,7 +3,7 @@
 #
 # Run on a fresh Raspberry Pi OS Lite (Bookworm or later):
 #
-#   curl -sSL https://raw.githubusercontent.com/SchoolAir/schoolair-ex-RMIT-pi/main/schoolair_setup.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/SchoolAir/schoolair/oded-dev/gateway/schoolair_setup.sh | sudo bash
 #
 # To override the Pi username (default: admin):
 #   curl ... | sudo ADMIN_USER=pi bash
@@ -39,8 +39,15 @@ set -euo pipefail
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_HOME="/home/${ADMIN_USER}"
 
-REPO_URL="https://github.com/SchoolAir/schoolair-ex-RMIT-pi.git"
-REPO_BRANCH="${REPO_BRANCH:-main}"
+# If the repo is private, supply a fine-grained PAT (contents:read) via GITHUB_TOKEN:
+#   curl ... | sudo GITHUB_TOKEN=ghp_xxx bash
+_TOKEN="${GITHUB_TOKEN:-}"
+if [ -n "$_TOKEN" ]; then
+    REPO_URL="https://${_TOKEN}@github.com/SchoolAir/schoolair.git"
+else
+    REPO_URL="https://github.com/SchoolAir/schoolair.git"
+fi
+REPO_BRANCH="${REPO_BRANCH:-oded-dev}"
 REPO_DIR="/tmp/schoolair-repo"
 
 SCHOOLAIR_DIR="${ADMIN_HOME}/schoolair"
@@ -80,7 +87,7 @@ ok "Root, user='${ADMIN_USER}', home='${ADMIN_HOME}'"
 # Fetch set_hostname.sh before the repo clone — needed at step 1.
 _RAW_BASE="$(echo "$REPO_URL" | sed 's|github\.com|raw.githubusercontent.com|; s|\.git$||')"
 _SET_HN_TMP="/tmp/schoolair-set_hostname.sh"
-curl -fsSL "${_RAW_BASE}/${REPO_BRANCH}/set_hostname.sh" \
+curl -fsSL "${_RAW_BASE}/${REPO_BRANCH}/gateway/set_hostname.sh" \
     -o "$_SET_HN_TMP" \
     || die "Cannot fetch set_hostname.sh from GitHub — check connectivity."
 chmod +x "$_SET_HN_TMP"
@@ -112,20 +119,26 @@ systemctl disable nginx 2>/dev/null || true
 systemctl stop    nginx 2>/dev/null || true
 
 # ── 3. Clone / update SchoolAir app ───────────────────────────────────────────
+# The SchoolAir repo is a monorepo; the gateway lives under gateway/.
+# Sparse-checkout fetches only that subtree to avoid pulling website assets.
 step "3 / Clone SchoolAir app  →  ${SCHOOLAIR_DIR}"
 rm -rf "$REPO_DIR"
-git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR" \
+git clone --depth 1 --filter=blob:none --no-checkout \
+    --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR" \
     || die "git clone failed — check connectivity and repo URL."
-ok "Cloned from ${REPO_URL}"
+git -C "$REPO_DIR" sparse-checkout init --cone
+git -C "$REPO_DIR" sparse-checkout set gateway
+git -C "$REPO_DIR" checkout
+ok "Cloned gateway/ from ${REPO_URL}"
 
 mkdir -p "$SCHOOLAIR_DIR"
 if [ -f "${SCHOOLAIR_DIR}/.env" ]; then
     cp "${SCHOOLAIR_DIR}/.env" /tmp/schoolair-env.bak
-    cp -r "${REPO_DIR}/." "${SCHOOLAIR_DIR}/"
+    cp -r "${REPO_DIR}/gateway/." "${SCHOOLAIR_DIR}/"
     mv /tmp/schoolair-env.bak "${SCHOOLAIR_DIR}/.env"
     ok "App deployed  (existing .env preserved)"
 else
-    cp -r "${REPO_DIR}/." "${SCHOOLAIR_DIR}/"
+    cp -r "${REPO_DIR}/gateway/." "${SCHOOLAIR_DIR}/"
     cp "${SCHOOLAIR_DIR}/.env.example" "${SCHOOLAIR_DIR}/.env"
     ok "App deployed + .env created from .env.example"
 fi
