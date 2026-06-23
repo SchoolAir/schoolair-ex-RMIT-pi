@@ -22,6 +22,7 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 import db.queue as queue
+from services.sensor import extract_metric
 
 AGGREGATE_AFTER_DAYS = 14 
 # TODO: possibly make .env but for now it's a code-level 
@@ -61,7 +62,9 @@ def _mean_data(readings: list[dict]) -> dict:
         values = []
 
         for reading in readings:
-            value = reading.get(key)
+            # Flat format (already-aggregated rows): {"co2": 1504, ...}
+            # Nested format (raw readings): {"sen6x": {"co2": 1504, ...}}
+            value = reading.get(key) if key in reading else extract_metric(reading, key)
             if isinstance(value, (int, float)):
                 values.append(value)
 

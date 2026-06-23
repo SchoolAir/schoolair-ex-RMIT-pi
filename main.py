@@ -25,6 +25,7 @@ from microdot import Microdot, Response
 from microdot.websocket import with_websocket
 from setup import check_registration
 from jobs.ingest import ingest_loop, trigger_drain
+from services.sensor import extract_metric
 import state
 
 load_dotenv()
@@ -99,8 +100,8 @@ async def ws_sensors(request, ws):
     """Push the latest sensor reading to the dashboard every 30 s."""
     while True:
         frame = {
-            "temp":       state.latest_data.get("temp") if state.latest_data else None,
-            "pm25":       state.latest_data.get("pm25") if state.latest_data else None,
+            "temp":       extract_metric(state.latest_data, "temp") if state.latest_data else None,
+            "pm25":       extract_metric(state.latest_data, "pm25") if state.latest_data else None,
             "registered": bool(os.getenv("AUTH_TOKEN", "").strip()),
             "nickname":   NICKNAME,
             "sent_at":    state.latest_recorded_at,

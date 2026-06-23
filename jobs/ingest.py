@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta, time
 from pathlib import Path
 import httpx
 from dotenv import load_dotenv
-from services.sensor import read_sensor
+from services.sensor import read_sensor, extract_metric
 import db.queue as queue
 import jobs.aggregate as aggregate
 import state
@@ -189,7 +189,7 @@ async def _take_verify_read(metric: str) -> float | None:
         return None
     state.set(data, recorded_at)
     _buffer.append({"data": data, "recorded_at": recorded_at})
-    return data.get(metric)
+    return extract_metric(data, metric)
 
 
 def _buffer_alert(alert: dict):
@@ -240,7 +240,7 @@ async def _do_verify(metric: str, criterion: dict, breach_entry: dict):
     threshold   = float(criterion["threshold"])
     condition   = criterion["condition"]
     severity    = criterion["severity"]
-    breach_val  = breach_entry["data"].get(metric)
+    breach_val  = extract_metric(breach_entry["data"], metric)
     recorded_at = breach_entry["recorded_at"]
 
     # ── Stage 1: T+10s and T+30s ──────────────────────────────────────────────
@@ -258,7 +258,14 @@ async def _do_verify(metric: str, criterion: dict, breach_entry: dict):
     if not _near_or_breached(avg1, threshold, condition):
         # Transient spike — patch the buffer entry in-place so the server
         # receives the corrected average instead of the momentary spike.
-        breach_entry["data"] = {**breach_entry["data"], metric: round(avg1, 4)}
+        data = breach_entry["data"]
+        for sensor_name, sensor_data in data.items():
+            if isinstance(sensor_data, dict) and metric in sensor_data:
+                breach_entry["data"] = {
+                    **data,
+                    sensor_name: {**sensor_data, metric: round(avg1, 4)},
+                }
+                break
         print(
             f"[verify/{metric}] Stage 1 avg {avg1:.2f} is below threshold "
             f"{threshold} — transient spike, breach value replaced"
@@ -486,7 +493,7 @@ async def _run_read():
         metric    = criterion["metric"]
         threshold = float(criterion["threshold"])
         condition = criterion["condition"]
-        value     = data.get(metric)
+        value     = extract_metric(data, metric)
 
         if value is None:
             continue
