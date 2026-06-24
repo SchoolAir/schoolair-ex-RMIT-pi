@@ -200,15 +200,9 @@ def _near_or_breached(value: float, threshold: float, condition: str) -> bool:
 async def _take_verify_read(metric: str) -> float | None:
     """Out-of-schedule sensor read during verification.
 
-    Sends SIGUSR1 to the C daemon so it reads the sensor immediately rather
-    than returning the stale value from its last 60 s cycle.
-    Added to buffer like any other reading.
+    read_sensor() invokes sen6x_read as a subprocess, so every call is a
+    fresh hardware read.  No separate trigger step is needed.
     """
-    from services.trigger import trigger_fresh_sample
-    fresh = await trigger_fresh_sample()
-    if not fresh:
-        print(f"[verify/{metric}] daemon trigger timed out — using last available sample")
-
     recorded_at = datetime.now(timezone.utc).isoformat()
     try:
         data = read_sensor()

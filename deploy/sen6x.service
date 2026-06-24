@@ -1,7 +1,8 @@
 [Unit]
 Description=Sensirion SEN6x Sensor — one-shot initialisation
-# Runs sen6x_read --init once at boot: resets the sensor, starts continuous
-# measurement, and waits for the first valid sample (up to ~22 s).
+# Runs sen6x_read --init once at boot: if the sensor is already in continuous
+# measurement mode it returns immediately; otherwise it resets, starts
+# continuous measurement, and waits up to 75 s for the first valid CO2 sample.
 # schoolair.service depends on this completing successfully before starting.
 After=network.target
 

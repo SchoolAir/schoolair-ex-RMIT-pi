@@ -113,12 +113,28 @@ static void print_json(const sensor_reading_t *r, sensor_type_t type) {
 
 /* ── --init path ────────────────────────────────────────────────────────── */
 
-/* Full initialisation: reset → settle → start continuous measurement →
- * wait up to 10 × 2 s for first valid sample.  Mirrors the startup sequence
- * in sen6x_d.c so both binaries behave identically on first boot. */
+/* Initialisation with fast-path fallback.
+ *
+ * First, try a direct read: if the sensor is already in continuous
+ * measurement mode (e.g. a service restart, or the daemon ran previously)
+ * there is no need to reset it — that would force an unnecessary ~45 s wait
+ * for CO2 to re-stabilise.
+ *
+ * Only if the fast path fails do we run the full reset sequence.  When we
+ * do reset, the SEN63C CO2 (NDIR) can take up to ~45 s to produce its first
+ * valid reading, so we allow 25 × 3 s = 75 s before giving up. */
 static int do_init(sensor_type_t type) {
-    int16_t error;
+    /* Fast path: sensor already in continuous mode. */
+    sensor_reading_t r;
+    int16_t error = read_values(&r, type);
+    if (error == NO_ERROR && reading_is_ready(&r, type)) {
+        fprintf(stderr, "[sen6x_read] sensor already running — skipping reset\n");
+        print_json(&r, type);
+        return 0;
+    }
 
+    /* Slow path: full reset and start. */
+    fprintf(stderr, "[sen6x_read] starting full init sequence\n");
     error = sen6x_device_reset();
     if (error != NO_ERROR) {
         fprintf(stderr, "[sen6x_read] device_reset failed: %d\n", error);
@@ -132,17 +148,18 @@ static int do_init(sensor_type_t type) {
         return 1;
     }
 
-    sensor_reading_t r;
-    for (int i = 0; i < 10; i++) {
+    /* SEN63C CO2 needs up to ~45 s after a cold reset; allow 75 s. */
+    for (int i = 0; i < 25; i++) {
+        sensirion_hal_sleep_us(3000000UL);   /* 3 s */
         error = read_values(&r, type);
         if (error == NO_ERROR && reading_is_ready(&r, type)) {
             print_json(&r, type);
             return 0;
         }
-        sensirion_hal_sleep_us(2000000UL);   /* 2 s */
+        fprintf(stderr, "[sen6x_read] waiting for first valid reading (%d/25)...\n", i + 1);
     }
 
-    fprintf(stderr, "[sen6x_read] no valid reading after init (20 s)\n");
+    fprintf(stderr, "[sen6x_read] no valid reading after 75 s — sensor may be faulty\n");
     return 2;
 }
 
