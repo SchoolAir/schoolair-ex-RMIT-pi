@@ -171,8 +171,8 @@ else
     skip "TLS certificate already present — not regenerated"
 fi
 
-# ── 7. Build sen6x daemon ──────────────────────────────────────────────────────
-step "7 / Build sen6x daemon"
+# ── 7. Build sen6x binaries ────────────────────────────────────────────────────
+step "7 / Build sen6x binaries"
 MAKEFILE="${SCHOOLAIR_DIR}/i2c/sen6x/Makefile.daemon"
 if [ ! -f "$MAKEFILE" ]; then
     skip "i2c/sen6x/Makefile.daemon not found in app"
@@ -180,10 +180,11 @@ else
     systemctl stop sen6x 2>/dev/null || true
     if make -C "${SCHOOLAIR_DIR}/i2c/sen6x" -f Makefile.daemon; then
         mkdir -p "${I2C_DIR}/sen6x"
-        cp "${SCHOOLAIR_DIR}/i2c/sen6x/sen6x_d" "${I2C_DIR}/sen6x/sen6x_d"
-        chmod +x "${I2C_DIR}/sen6x/sen6x_d"
+        cp "${SCHOOLAIR_DIR}/i2c/sen6x/sen6x_d"    "${I2C_DIR}/sen6x/sen6x_d"
+        cp "${SCHOOLAIR_DIR}/i2c/sen6x/sen6x_read"  "${I2C_DIR}/sen6x/sen6x_read"
+        chmod +x "${I2C_DIR}/sen6x/sen6x_d" "${I2C_DIR}/sen6x/sen6x_read"
         chown -R "${ADMIN_USER}:${ADMIN_USER}" "$I2C_DIR"
-        ok "sen6x daemon compiled  →  ${I2C_DIR}/sen6x/sen6x_d"
+        ok "sen6x binaries compiled  →  ${I2C_DIR}/sen6x/"
     else
         warn "sen6x make failed — check gcc output above (non-fatal)"
     fi

@@ -1,15 +1,17 @@
 [Unit]
-Description=Sensirion SEN6x Sensor Daemon for SchoolAir
+Description=Sensirion SEN6x Sensor — one-shot initialisation
+# Runs sen6x_read --init once at boot: resets the sensor, starts continuous
+# measurement, and waits for the first valid sample (up to ~22 s).
+# schoolair.service depends on this completing successfully before starting.
 After=network.target
 
 [Service]
-# Path to your compiled binary
-ExecStart=/home/admin/i2c/sen6x/sen6x_d
-Restart=always
-RestartSec=10
-# Directs C's stderr to the system log
-StandardError=journal
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/admin/i2c/sen6x/sen6x_read --init
 User=admin
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

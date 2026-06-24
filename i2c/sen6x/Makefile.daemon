@@ -1,28 +1,27 @@
 # Run with `make -f Makefile.daemon`
-# possibly add `&& ./sen6x_d &`
-CC = gcc
-# -I. looks here, -I./raspberry-pi-i2c-sen63c looks inside the repo folder
+CC     = gcc
 CFLAGS = -Wall -I. -I./raspberry-pi-i2c-sen6x
 
-# Define where the library files live
 LIB_DIR = raspberry-pi-i2c-sen6x
 
-# Prefix the library files with the directory path
-SRCS = sen6x_d.c \
-       $(LIB_DIR)/sen63c_i2c.c \
-       $(LIB_DIR)/sen65_i2c.c \
-       $(LIB_DIR)/sensirion_i2c.c \
-       $(LIB_DIR)/sensirion_common.c \
-       $(LIB_DIR)/sensirion_i2c_hal.c
-
-TARGET = sen6x_d
+LIB_SRCS = $(LIB_DIR)/sen63c_i2c.c \
+            $(LIB_DIR)/sen65_i2c.c \
+            $(LIB_DIR)/sensirion_i2c.c \
+            $(LIB_DIR)/sensirion_common.c \
+            $(LIB_DIR)/sensirion_i2c_hal.c
 
 .PHONY: all clean
 
-all: $(TARGET)
+all: sen6x_d sen6x_read
 
-$(TARGET): $(SRCS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRCS)
+sen6x_d: sen6x_d.c $(LIB_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# One-shot reader called by the Python gateway via read-sensor.sh.
+# sen6x_d is kept as a standalone debug/monitoring tool but is no longer
+# started by sen6x.service.  sen6x_read --init replaces that role.
+sen6x_read: sen6x_read.c $(LIB_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^
 
 clean:
-	rm -f $(TARGET)
+	rm -f sen6x_d sen6x_read
