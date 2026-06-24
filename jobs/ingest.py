@@ -33,6 +33,12 @@ load_dotenv()
 
 SERVER_URL         = os.getenv("SERVER_URL", "").rstrip("/")
 INGEST_URL         = os.getenv("INGEST_URL", f"{SERVER_URL}/aqc/v1/ingest")
+
+# Optional secondary server — receives a best-effort mirror of every successful
+# drain.  Failure here never affects the primary drain.  Set both vars to enable.
+_NEW_SERVER_URL    = os.getenv("NEW_SERVER_URL", "").rstrip("/")
+_NEW_INGEST_URL    = os.getenv("NEW_INGEST_URL", f"{_NEW_SERVER_URL}/aqc/v1/ingest") if _NEW_SERVER_URL else ""
+_NEW_AUTH_TOKEN    = os.getenv("NEW_AUTH_TOKEN", "").strip()
 ALERT_NEAR_PCT     = float(os.getenv("ALERT_NEAR_PCT", 10))  # within N% of threshold = "near"
 ALERT_COOLDOWN_HRS = float(os.getenv("ALERT_COOLDOWN_HOURS", 1))
 BUFFER_CAPACITY    = int(os.getenv("BUFFER_CAPACITY", 500))
@@ -490,6 +496,25 @@ async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> di
         return {}  # server returned 2xx with empty/non-JSON body (e.g. LEGACY endpoint)
 
 
+async def _mirror_batch(measurements: list[dict]) -> None:
+    """Best-effort POST to the secondary server. Never raises."""
+    if not (_NEW_INGEST_URL and _NEW_AUTH_TOKEN):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.post(
+                _NEW_INGEST_URL,
+                headers={"Authorization": f"Bearer {_NEW_AUTH_TOKEN}", "Content-Type": "application/json"},
+                json={"measurements": measurements},
+            )
+        if not res.is_success:
+            print(f"[mirror] new server returned {res.status_code}")
+        else:
+            print(f"[mirror] {res.json().get('count', len(measurements))} measurement(s) sent")
+    except Exception as e:
+        print(f"[mirror] new server unreachable: {e}")
+
+
 # --------------------------- Read step ---------------------------
 
 
@@ -637,6 +662,8 @@ async def _run_drain(settings: dict):
             save_criteria(response["criteria"])
 
         print(f"  Sent {response.get('count', len(payload))} measurement(s)")
+
+        await _mirror_batch(payload)
 
         # Flush alert buffer now that we know we have connectivity
         await _drain_alerts()
