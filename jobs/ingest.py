@@ -2,13 +2,14 @@
 
 Two-speed data pipeline:
 
-  Read loop  — collects a sensor reading every interval_read_active (active
-               window) or interval_read_idle (outside window) and holds it in
+  Read loop  — collects a sensor reading every READ_ACTIVE_SECONDS (active
+               window) or READ_IDLE_SECONDS (outside window) and holds it in
                an in-memory buffer.  Nothing is written to disk here.
 
-  Drain loop — on a slower timer (interval_drain_active / interval_drain_idle),
-               POSTs the entire buffer plus any SQLite backlog to the server in
-               one batch, then clears the buffer.
+  Drain loop — event-driven: the read loop triggers a drain after each standard
+               read once DRAIN_ACTIVE_SECONDS / DRAIN_IDLE_SECONDS have elapsed
+               since the last drain.  The drain loop itself is a pure event
+               consumer with a long fallback timeout as a safety net.
 
 SQLite is written only when the buffer hits BUFFER_CAPACITY *and* the server is
 unreachable — so during normal operation the SD card is never touched for
@@ -36,14 +37,17 @@ ALERT_NEAR_PCT     = float(os.getenv("ALERT_NEAR_PCT", 10))  # within N% of thre
 ALERT_COOLDOWN_HRS = float(os.getenv("ALERT_COOLDOWN_HOURS", 1))
 BUFFER_CAPACITY    = int(os.getenv("BUFFER_CAPACITY", 500))
 
+# Read and drain intervals are hardcoded, not user-configurable.
+# Overridable via env var for development and testing only.
+READ_ACTIVE_SECONDS  = int(os.getenv("READ_INTERVAL_ACTIVE",  300))   # 5 min
+READ_IDLE_SECONDS    = int(os.getenv("READ_INTERVAL_IDLE",    900))   # 15 min
+DRAIN_ACTIVE_SECONDS = int(os.getenv("DRAIN_INTERVAL_ACTIVE", 1800))  # 30 min
+DRAIN_IDLE_SECONDS   = int(os.getenv("DRAIN_INTERVAL_IDLE",   7200))  # 2 h
+
 CRITERIA_PATH = Path("config/criteria.json")
 SETTINGS_PATH = Path("config/settings.json")
 
 DEFAULT_SETTINGS = {
-    "interval_read_active":  300,   # 5 min
-    "interval_read_idle":    900,   # 15 min
-    "interval_drain_active": 1800,  # 30 min
-    "interval_drain_idle":   7200,  # 2 h
     "active_window": {"start": "07:00", "end": "16:00"},
 }
 
@@ -59,9 +63,10 @@ _verifying:           set[str]            = set()   # metrics currently in a ver
 _alert_buffer:        list[dict]          = []      # alerts pending send (in-memory first)
 ALERT_BUFFER_CAPACITY = int(os.getenv("ALERT_BUFFER_CAPACITY", 50))
 
-# Set by trigger_drain() (SIGUSR2 handler or internal callers) to break the
-# drain sleep early.  Initialised to None until the event loop is running.
-_drain_trigger: asyncio.Event | None = None
+# Set by trigger_drain() (SIGUSR2 handler or internal callers) to wake the
+# drain loop.  Initialised to None until the event loop is running.
+_drain_trigger:   asyncio.Event | None = None
+_last_drained_at: datetime | None     = None
 
 
 def trigger_drain() -> None:
@@ -121,13 +126,11 @@ def validate_settings(settings: dict):
 
 
 def current_read_interval(settings: dict, now: time | None = None) -> int:
-    key = "interval_read_active" if _in_active_window(settings, now) else "interval_read_idle"
-    return settings[key]
+    return READ_ACTIVE_SECONDS if _in_active_window(settings, now) else READ_IDLE_SECONDS
 
 
 def current_drain_interval(settings: dict, now: time | None = None) -> int:
-    key = "interval_drain_active" if _in_active_window(settings, now) else "interval_drain_idle"
-    return settings[key]
+    return DRAIN_ACTIVE_SECONDS if _in_active_window(settings, now) else DRAIN_IDLE_SECONDS
 
 
 # --------------------------- Criteria ---------------------------
@@ -471,7 +474,15 @@ async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> di
 # --------------------------- Read step ---------------------------
 
 
-async def _run_read():
+def _should_drain(settings: dict) -> bool:
+    """True if enough time has elapsed since the last drain to justify one now."""
+    if _last_drained_at is None:
+        return False  # let the initial drain in _drain_loop handle startup
+    elapsed = (datetime.now(timezone.utc) - _last_drained_at).total_seconds()
+    return elapsed >= current_drain_interval(settings)
+
+
+async def _run_read(settings: dict):
     """Read one sensor sample, update buffer, and trigger verification on any breach."""
     recorded_at = datetime.now(timezone.utc).isoformat()
     try:
@@ -485,32 +496,34 @@ async def _run_read():
     _buffer.append(entry)
 
     criteria = load_criteria()
-    if not criteria:
-        return
+    if criteria:
+        now = datetime.now(timezone.utc)
+        for criterion in criteria:
+            metric    = criterion["metric"]
+            threshold = float(criterion["threshold"])
+            condition = criterion["condition"]
+            value     = extract_metric(data, metric)
 
-    now = datetime.now(timezone.utc)
-    for criterion in criteria:
-        metric    = criterion["metric"]
-        threshold = float(criterion["threshold"])
-        condition = criterion["condition"]
-        value     = extract_metric(data, metric)
+            if value is None:
+                continue
+            if not _breached(float(value), threshold, condition):
+                continue
+            if metric in _verifying:
+                continue
 
-        if value is None:
-            continue
-        if not _breached(float(value), threshold, condition):
-            continue
-        if metric in _verifying:
-            continue
+            last_alert = alert_cooldown.get(metric)
+            if last_alert and (now - last_alert) < timedelta(hours=ALERT_COOLDOWN_HRS):
+                continue
 
-        last_alert = alert_cooldown.get(metric)
-        if last_alert and (now - last_alert) < timedelta(hours=ALERT_COOLDOWN_HRS):
-            continue
+            print(
+                f"[breach] {metric} = {value} ({condition} threshold {threshold}) "
+                f"— starting verification"
+            )
+            asyncio.create_task(_verify_alert(metric, criterion, entry))
 
-        print(
-            f"[breach] {metric} = {value} ({condition} threshold {threshold}) "
-            f"— starting verification"
-        )
-        asyncio.create_task(_verify_alert(metric, criterion, entry))
+    # Trigger drain on standard reads — not during alert verification.
+    if not _verifying and _should_drain(settings):
+        trigger_drain()
 
 
 # --------------------------- Drain step ---------------------------
@@ -524,7 +537,7 @@ async def _run_drain(settings: dict):
       2. The server is unreachable.
     All other drain attempts go memory → server with no disk I/O.
     """
-    global _buffer
+    global _buffer, _last_drained_at
 
     # Compact old SQLite rows into hourly means (no-op when SQLite is empty)
     try:
@@ -541,6 +554,8 @@ async def _run_drain(settings: dict):
         dropped = queue.trim_aggregated(depth - aggregate.QUEUE_LOW_WATER)
         if dropped:
             print(f"SQLite queue over cap — discarded {dropped} oldest aggregated row(s)")
+
+    _last_drained_at = datetime.now(timezone.utc)
 
     token = os.getenv("AUTH_TOKEN", "").strip()
     if not token:
@@ -581,11 +596,15 @@ async def _run_drain(settings: dict):
     if sqlite_ids:
         queue.set_status_many(sqlite_ids, "sending")
 
+    # Snapshot the buffer length before the async POST so any reading appended
+    # by _run_read during the HTTP call is not accidentally discarded.
+    n_buffered = len(_buffer)
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await _post_batch(client, payload)
 
-        _buffer.clear()
+        del _buffer[:n_buffered]
         if sqlite_ids:
             queue.remove_many(sqlite_ids)
 
@@ -632,7 +651,7 @@ async def _run_drain(settings: dict):
 
 async def _read_loop(settings: dict):
     while True:
-        await _run_read()
+        await _run_read(settings)
         interval = current_read_interval(settings)
         mode = "active" if _in_active_window(settings) else "idle"
         print(f"[read/{mode}] next in {interval}s")
@@ -643,21 +662,22 @@ async def _drain_loop(settings: dict):
     global _drain_trigger
     _drain_trigger = asyncio.Event()
 
-    # Brief settle so the read loop collects at least one reading before the
-    # first drain, and to clear any SQLite backlog left from a previous outage.
+    # Brief settle so the read loop collects at least one reading, and to clear
+    # any SQLite backlog left from a previous outage.
     await asyncio.sleep(15)
     await _run_drain(settings)
 
+    # Drains are triggered by _run_read once the drain interval has elapsed.
+    # The fallback timeout fires only if reads stop arriving for an extended period
+    # (e.g. sensor failure) so the loop never blocks indefinitely.
+    fallback = float(DRAIN_IDLE_SECONDS * 2)
     while True:
-        interval = current_drain_interval(settings)
-        mode = "active" if _in_active_window(settings) else "idle"
-        print(f"[drain/{mode}] next in {interval}s")
         try:
-            await asyncio.wait_for(_drain_trigger.wait(), timeout=float(interval))
+            await asyncio.wait_for(_drain_trigger.wait(), timeout=fallback)
             _drain_trigger.clear()
-            print("[drain] on-demand drain triggered")
+            print("[drain] triggered")
         except asyncio.TimeoutError:
-            pass
+            print("[drain] fallback — no reads received, draining anyway")
         await _run_drain(settings)
 
 
@@ -668,8 +688,8 @@ async def ingest_loop():
     validate_settings(settings)
     print(
         f"Ingest started — "
-        f"reads {settings['interval_read_active']}s/{settings['interval_read_idle']}s (active/idle) | "
-        f"drains {settings['interval_drain_active']}s/{settings['interval_drain_idle']}s (active/idle) | "
+        f"reads {READ_ACTIVE_SECONDS}s/{READ_IDLE_SECONDS}s (active/idle) | "
+        f"drains {DRAIN_ACTIVE_SECONDS}s/{DRAIN_IDLE_SECONDS}s (active/idle) | "
         f"buffer capacity {BUFFER_CAPACITY}"
     )
     await asyncio.gather(
