@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/schoolair
-ExecStart=/home/pi/schoolair/.venv/bin/python -u /home/pi/schoolair/main.py
+User=admin
+WorkingDirectory=/home/admin/schoolair
+ExecStart=/home/admin/schoolair/.venv/bin/python -u /home/admin/schoolair/main.py
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

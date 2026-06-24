@@ -1,30 +1,102 @@
 # schoolair-pi
 
-Raspberry Pi client for the SchoolAir platform. Handles device registration,
-sensor reading, data ingestion, and local alert detection.
+Raspberry Pi gateway for the SchoolAir platform. Handles device registration,
+sensor reading, data ingestion to the central server, and local alert detection.
 
 ---
 
-## Overview
+## Quick start — fresh Pi
 
-On startup the Pi checks for a valid auth token. If the token is missing or
-the server rejects it, the process exits and asks you to register
-(`python -m setup`). If the server is simply unreachable, the Pi starts anyway
-and queues readings locally until it can reconnect.
+```bash
+curl -sSL https://raw.githubusercontent.com/SchoolAir/schoolair-ex-RMIT-pi/main/schoolair_setup.sh | sudo bash
+```
 
-Once running, the Pi runs two concurrent processes:
-- **Ingest job** — reads the sensor on a variable interval (active vs. idle
-  window), queues each reading locally, then drains the queue to the server.
-  Tracks consecutive threshold breaches and fires confirmed alerts.
-- **Microdot server** — a lightweight local web server on the school network
-  for on-device status (to be expanded into a student-facing dashboard).
+This clones the repo to `/home/admin/schoolair/`, installs dependencies, builds
+the SEN6x sensor daemon, configures a Wi-Fi hotspot for first-boot registration,
+and enables all systemd services. Idempotent — safe to re-run.
 
-Registration is a one-time manual step (`python -m setup`); the running
-service never prompts.
+To use a different admin username:
+
+```bash
+curl -sSL ... | sudo ADMIN_USER=pi bash
+```
 
 ---
 
-## Setup
+## How it works
+
+### Service topology
+
+Five systemd services run in sequence on every boot:
+
+```
+sen6x.service            C daemon — reads the SEN6x sensor over I2C,
+                         writes flat JSON to /home/admin/i2c/sen6x/sen6x.json
+
+schoolair-first-boot     One-shot — assigns a unique hostname to cloned images
+  .service               (schoolair-YYMDD-XXXX). No-op if already set.
+
+schoolair-launcher       One-shot — checks whether AUTH_TOKEN is present in
+  .service               .env. If missing → starts the wizard. If present →
+                         exits so schoolair.service can run.
+
+schoolair-wizard         Browser-based registration + Wi-Fi setup (Microdot,
+  .service               port 80). Started on demand by the launcher. Stops
+                         itself after a successful registration.
+
+schoolair.service        Main telemetry process (see below). Starts after the
+                         launcher exits. Restarts automatically on failure.
+```
+
+### Telemetry process
+
+`main.py` runs two concurrent coroutines:
+
+- **Ingest loop** — reads the sensor on a clock-aligned schedule (5 min during
+  the active window, 15 min outside it), buffers readings in RAM, and drains
+  them to the server in batches. Checks each reading against alert criteria and
+  runs a two-stage verification routine (T+10 s / T+30 s → T+1 m / T+2 m) when
+  a threshold is breached. Alerts are only sent after the verification confirms
+  the breach is persistent, not a spike.
+
+- **Microdot server** — lightweight local web server (port 8080). Serves the
+  real-time dashboard at `/` and pushes live sensor state over WebSocket at
+  `/ws`. nginx on port 80 proxies to this once the device is registered.
+
+### Buffer strategy
+
+The ingest loop is RAM-first: up to 500 readings are held in memory. SQLite is
+only written when the server is unreachable **and** the RAM buffer is full. On
+reconnect the next drain sends both the SQLite backlog and the current RAM
+buffer in a single batch. On clean shutdown (`systemctl stop`, `sudo reboot`)
+both in-memory buffers (measurements and alerts) are flushed to SQLite before
+exit.
+
+### Drain timing
+
+Drains are event-driven: the read loop triggers a drain whenever the time since
+the last drain would exceed the configured interval if the current read were
+skipped. This guarantees drains happen *within* the configured window (25–30 min
+active, 105–120 min idle) without a separate polling timer.
+
+---
+
+## First boot — registration
+
+On first boot the launcher detects no `AUTH_TOKEN` and starts the wizard.
+Connect to the `SchoolAir_Setup` Wi-Fi hotspot or navigate to
+`http://schoolair-register.local` on the same network. The wizard guides you
+through:
+
+1. Device registration with the SchoolAir server
+2. Wi-Fi configuration (connects the Pi to the school network)
+
+After registration the wizard writes `AUTH_TOKEN` to `.env`, restarts
+`schoolair.service`, and exits. nginx activates to proxy port 80 → port 8080.
+
+---
+
+## Local development
 
 ```bash
 python3 -m venv .venv
@@ -32,153 +104,141 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
+# Edit .env: set SERVER_URL and optionally DEVICE_NICKNAME
 ```
 
-Fill in `SERVER_URL` in `.env` before running. `AUTH_TOKEN` is written
-automatically on successful registration.
-
-Register the device once:
+Run with the mock sensor (no Pi hardware needed):
 
 ```bash
-python -m setup
-```
-
----
-
-## Unit Testing
-
-Navigate to the root of the pi repository directory and run the
-following command.
-
-```bash
-# Make sure in virtual environment
-source .venv/bin/activate
-python -m pytest
-```
-
----
-
-## Running (development)
-
-```bash
-# Real sensor
-python main.py
-
-# Mock sensor
 MOCK_SENSOR_SCRIPT=./scripts/mock-sensor.sh python main.py
 ```
 
----
-
-## Deployment
-
-The Pi runs under `systemd`. There are two unit files in `deploy/`:
-
-- `schoolair.service` — production (system service, runs as the `pi` user).
-- `schoolair-dev.service.example` — development (user service, runs as you).
-
-### Development (user service)
-
-Runs under your own account — no `sudo` required.
+Run with the real sensor bridge (Pi only):
 
 ```bash
-# Register once if you haven't already
-python -m setup
-
-# Copy the example, replace repo_path, install
-cp deploy/schoolair-dev.service.example ~/.config/systemd/user/schoolair-dev.service
-# edit the copy: replace repo_path with your path under $HOME
-
-systemctl --user daemon-reload
-systemctl --user start schoolair-dev
-journalctl --user -u schoolair-dev -f
+python main.py   # uses read-sensor.sh by default via MOCK_SENSOR_SCRIPT in .env
 ```
 
-### Production (system service)
+For one-off sensor checks:
 
 ```bash
-# Replace placeholders in the prod unit
-sed -i 's|USERNAME|pi|g; s|REPO_PATH|/home/pi/schoolair|g' deploy/schoolair.service
-
-sudo cp deploy/schoolair.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now schoolair.service
+bash scripts/preview.sh
 ```
-
-A missing or rejected token makes the service exit and retry every 10s;
-once you register, the next restart picks up the token automatically.
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUTH_TOKEN` | (empty) | Device auth token; written automatically on registration |
-| `SERVER_URL` | (empty) | Central server URL for ingest and alerts |
-| `PORT` | `3001` | Port for the local Microdot status server |
-| `ALERT_CONFIDENCE` | `3` | Consecutive threshold breaches required to confirm an alert |
-| `ALERT_COOLDOWN_HOURS` | `1` | Hours between alerts for the same metric |
-| `QUEUE_ALERT_SKIP` | `50` | Queue depth above which alert checking is skipped during a drain |
-| `MOCK_SENSOR_SCRIPT` | `./scripts/mock-sensor.sh` | Mock sensor script for development without hardware |
 
 ---
 
 ## Configuration
 
-`config/settings.json` controls the ingest schedule. The Pi uses the active
-interval inside the active window and the idle interval outside it.
+`config/settings.json` controls the active window — the period during which the
+Pi reads and drains at the higher cadence (school hours).
 
 ```json
 {
-    "interval_active": 60,
-    "interval_idle": 300,
     "active_window": { "start": "07:00", "end": "16:00" }
 }
 ```
 
-The active window has a hard limit of **9 hours** (e.g. 07:00–16:00). A longer
-window fails validation at startup.
+- Window boundaries must be on a 15-minute mark (`:00`, `:15`, `:30`, `:45`).
+- Maximum window length is 9 hours.
+- Read and drain intervals are fixed in source (`jobs/ingest.py`) and
+  overridable via env vars for testing:
 
-> [!WARNING]
-> `interval_active` and `interval_idle` should not be modified — the server
-> enforces a minimum ingest interval.
+| Env var                  | Default   | Meaning                        |
+|--------------------------|-----------|--------------------------------|
+| `READ_INTERVAL_ACTIVE`   | `300` s   | 5 min — sensor read cadence inside the window  |
+| `READ_INTERVAL_IDLE`     | `900` s   | 15 min — sensor read cadence outside the window |
+| `DRAIN_INTERVAL_ACTIVE`  | `1800` s  | 30 min — max time between drains inside the window |
+| `DRAIN_INTERVAL_IDLE`    | `7200` s  | 2 hr — max time between drains outside the window  |
 
 ---
 
-## File Structure
+## Environment variables
+
+See `.env.example` for the full list. Key ones:
+
+| Variable              | Default                   | Description |
+|-----------------------|---------------------------|-------------|
+| `AUTH_TOKEN`          | (empty)                   | Device auth token; written by the wizard on first boot |
+| `SERVER_URL`          | `https://data.schoolair.org` | Central server base URL (no trailing slash) |
+| `INGEST_URL`          | `{SERVER_URL}/node/aqc/v1/ingest` | Override the full ingest endpoint |
+| `MOCK_SENSOR_SCRIPT`  | `./read-sensor.sh`        | Sensor script; replace with `./scripts/mock-sensor.sh` for development |
+| `DEVICE_NICKNAME`     | (hostname)                | Display name shown on the dashboard |
+| `PORT`                | `8080`                    | Local Microdot server port |
+| `ALERT_NEAR_PCT`      | `10`                      | How close to a threshold counts as "near" during verification (%) |
+| `ALERT_COOLDOWN_HOURS`| `1`                       | Minimum hours between alerts for the same metric |
+| `BUFFER_CAPACITY`     | `500`                     | RAM buffer size (readings) before SQLite overflow |
+
+---
+
+## Testing
+
+103 tests. All pass on a laptop except one hardware test that requires the real
+SEN6x I2C daemon on a Pi.
+
+```bash
+cd schoolair/        # repo root
+pytest -m "not hardware"    # laptop-safe (102 tests)
+pytest                      # full suite — Pi only
+```
+
+See `tests/README.md` for a breakdown by module.
+
+---
+
+## File structure
 
 ```
-pi/
+schoolair-pi/
 ├── config/
-│   ├── criteria.json       # Latest alert criteria from server, persisted across restarts
-│   └── settings.json       # Ingest schedule (intervals + active window)
+│   ├── criteria.json          Alert thresholds — written by the server on first
+│   │                          successful drain; persisted across restarts
+│   └── settings.json          Active window configuration
 │
 ├── db/
-│   └── queue.py            # SQLite queue — enqueue, drain, and retry failed measurements
+│   └── queue.py               SQLite offline buffer — measurements and alerts
 │
 ├── deploy/
-│   ├── schoolair.service           # Production systemd unit
-│   └── schoolair-dev.service.example  # Development (user) systemd unit template
+│   ├── sen6x.service          C sensor daemon service
+│   ├── schoolair-first-boot   One-shot hostname assignment
+│   │   .service
+│   ├── schoolair-launcher     Network check → start wizard or proceed
+│   │   .service
+│   ├── schoolair-wizard       Browser registration + Wi-Fi setup
+│   │   .service
+│   ├── schoolair.service      Main telemetry service
+│   └── schoolair-dev          Development (user) service template
+│       .service.example
+│
+├── i2c/sen6x/                 SEN6x C daemon source and Makefile
 │
 ├── jobs/
-│   └── ingest.py           # Main ingest loop — sensor read, queue, drain, alert checking
+│   ├── aggregate.py           Hourly folding of old readings to reduce DB size
+│   └── ingest.py              Read loop, drain loop, alert verification
+│
+├── registration_wizard/
+│   ├── launcher.sh            Decides whether to start the wizard
+│   └── wizard.py              Microdot browser portal (registration + Wi-Fi)
 │
 ├── scripts/
-│   ├── mock-sensor.sh      # Mock sensor for development
-│   ├── populate_queue.sh   # Debug util to populate local sqlite
-│   └── preview.sh          # Preview sensor output in terminal
+│   ├── mock-sensor.sh         Fake sensor output for local development
+│   ├── preview.sh             One-shot sensor read to terminal
+│   └── populate_queue.py      Debug util — fill the local SQLite queue
 │
 ├── services/
-│   └── sensor.py           # Executes sensor script, flattens output to known fields + raw payload
+│   ├── sensor.py              Runs sensor script, parses nested JSON output
+│   └── trigger.py             SIGUSR2 handler — immediate out-of-schedule drain
 │
-├── tests/jobs              # pytest suite
-│   ├── test_aggregate.py   
-│   └── test_ingest.py           
+├── static/
+│   └── dashboard.html         Real-time Alpine.js dashboard (served at /)
 │
-├── main.py                 # Entrypoint — runs check_registration() then ingest job + Microdot
-├── setup.py                # Registration tool (python -m setup) and headless startup gate
-├── pi-schema.sql           # Local SQLite schema for the measurements queue
-├── pyproject.toml          # Project + pytest config
-└── requirements.txt        # Python dependencies
+├── tests/                     103 tests across 7 modules
+│
+├── main.py                    Entrypoint — ingest loop + Microdot server
+├── setup.py                   Registration gate (check_registration) and
+│                              recovery CLI (python -m setup)
+├── read-sensor.sh             Bridges sen6x daemon JSON → sensor.py format
+├── schoolair_setup.sh         One-command fresh-Pi installer
+├── state.py                   Shared in-memory sensor state for the dashboard
+├── pyproject.toml             Project + pytest config
+└── requirements.txt           Python dependencies
 ```
