@@ -12,7 +12,7 @@ curl -sSL https://raw.githubusercontent.com/SchoolAir/schoolair-ex-RMIT-pi/main/
 ```
 
 This clones the repo to `/home/admin/schoolair/`, installs dependencies, builds
-the SEN6x sensor daemon, configures a Wi-Fi hotspot for first-boot registration,
+the SEN6x binaries, configures a Wi-Fi hotspot for first-boot registration,
 and enables all systemd services. Idempotent — safe to re-run.
 
 To use a different admin username:
@@ -30,8 +30,10 @@ curl -sSL ... | sudo ADMIN_USER=pi bash
 Five systemd services run in sequence on every boot:
 
 ```
-sen6x.service            C daemon — reads the SEN6x sensor over I2C,
-                         writes flat JSON to /home/admin/i2c/sen6x/sen6x.json
+sen6x.service            One-shot — runs `sen6x_read --init` at boot. Starts
+                         continuous measurement and waits for the first valid
+                         sample (fast if sensor already running, up to 75 s
+                         cold). schoolair.service depends on it completing.
 
 schoolair-first-boot     One-shot — assigns a unique hostname to cloned images
   .service               (schoolair-YYMDD-XXXX). No-op if already set.
@@ -172,8 +174,8 @@ See `.env.example` for the full list. Key ones:
 
 ## Testing
 
-103 tests. All pass on a laptop except one hardware test that requires the real
-SEN6x I2C daemon on a Pi.
+103 tests. All pass on a laptop except one hardware test that requires a real
+SEN6x sensor connected via I2C on a Pi.
 
 ```bash
 cd schoolair/        # repo root
@@ -198,7 +200,7 @@ schoolair-pi/
 │   └── queue.py               SQLite offline buffer — measurements and alerts
 │
 ├── deploy/
-│   ├── sen6x.service          C sensor daemon service
+│   ├── sen6x.service          SEN6x one-shot initialisation service
 │   ├── schoolair-first-boot   One-shot hostname assignment
 │   │   .service
 │   ├── schoolair-launcher     Network check → start wizard or proceed
@@ -209,7 +211,7 @@ schoolair-pi/
 │   └── schoolair-dev          Development (user) service template
 │       .service.example
 │
-├── i2c/sen6x/                 SEN6x C daemon source and Makefile
+├── i2c/sen6x/                 SEN6x C binaries source (sen6x_d, sen6x_read) and Makefile
 │
 ├── jobs/
 │   ├── aggregate.py           Hourly folding of old readings to reduce DB size
@@ -226,7 +228,7 @@ schoolair-pi/
 │
 ├── services/
 │   ├── sensor.py              Runs sensor script, parses nested JSON output
-│   └── trigger.py             SIGUSR2 handler — immediate out-of-schedule drain
+│   └── trigger.py             Retired — previously SIGUSR1 daemon trigger
 │
 ├── static/
 │   └── dashboard.html         Real-time Alpine.js dashboard (served at /)
@@ -236,7 +238,7 @@ schoolair-pi/
 ├── main.py                    Entrypoint — ingest loop + Microdot server
 ├── setup.py                   Registration gate (check_registration) and
 │                              recovery CLI (python -m setup)
-├── read-sensor.sh             Bridges sen6x daemon JSON → sensor.py format
+├── read-sensor.sh             Invokes sen6x_read; sensor.py captures its stdout
 ├── schoolair_setup.sh         One-command fresh-Pi installer
 ├── state.py                   Shared in-memory sensor state for the dashboard
 ├── pyproject.toml             Project + pytest config

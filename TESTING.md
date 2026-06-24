@@ -151,40 +151,34 @@ journalctl -u schoolair -n 20 --no-pager
 
 ---
 
-## Phase 4 — SEN63C Daemon
+## Phase 4 — SEN6x sensor
 
-### 4.1  Daemon writing readings
+### 4.1  One-shot read
 
 ```bash
-watch -n 5 cat /home/admin/i2c/sen6x/sen6x.json
+/home/admin/i2c/sen6x/sen6x_read
 ```
 
-- [ ] File exists and updates every ~60s
-- [ ] JSON contains: `temp`, `humidity`, `pm10`, `pm25`, `pm40`, `pm100`, `voc`, `nox`
-- [ ] `co2` is **absent or 0** (SEN63C has no CO2 sensor — expected)
+- [ ] Exits 0 and prints JSON to stdout
+- [ ] JSON contains `measured_at`, `temp`, `humidity`, `pm10`, `pm25`, `pm40`, `pm100`
+- [ ] `co2` present (SEN63C) or `voc`/`nox` present (SEN65)
 - [ ] Values are physically plausible:
   - `temp`: 15–35°C
   - `humidity`: 20–80%
   - `pm25`: < 20 µg/m³ indoors at rest
-  - `voc`: 0–500 index
+  - `co2`: 400–2000 ppm
 
-### 4.2  SIGUSR1 on-demand trigger
-
-In one terminal, watch the file mtime:
+### 4.2  sen6x.service initialisation
 
 ```bash
-watch -n 1 "stat /home/admin/i2c/sen6x/sen6x.json | grep Modify"
+sudo systemctl restart sen6x
+systemctl status sen6x
+journalctl -u sen6x -n 20
 ```
 
-In another, send the signal manually:
-
-```bash
-PID=$(systemctl show -p MainPID --value sen6x)
-sudo kill -USR1 $PID
-```
-
-- [ ] File mtime updates within ~1s (daemon broke out of its 60s sleep)
-- [ ] New JSON contents reflect a fresh read
+- [ ] Service exits with status 0/SUCCESS
+- [ ] Log shows either "sensor already running — skipping reset" (fast path) or a sequence of "waiting for first valid reading" lines ending with valid JSON (cold boot)
+- [ ] `systemctl is-active sen6x` returns `active` (RemainAfterExit=yes)
 
 ### 4.3  schoolair CLI
 

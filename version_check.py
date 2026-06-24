@@ -7,8 +7,7 @@ import datetime
 
 
 VERSION = "2.0.0"
-BINARY_PATH = "/home/admin/i2c/sen6x/sen6x_d"
-SENSOR_JSON = "/home/admin/i2c/sen6x/sen6x.json"
+BINARY_PATH = "/home/admin/i2c/sen6x/sen6x_read"
 
 FIELD_LABELS = {
     "temp":     ("Temperature",  "°C"),
@@ -38,19 +37,25 @@ def run_cli():
         if arg == "-v":
             print(f"SchoolAir v{VERSION}")
             print(f"Build Date (Last Edited): {get_last_modified()}")
-            subprocess.run([BINARY_PATH, "-v"])
             return
 
         if arg == "--status":
+            if not os.path.exists(BINARY_PATH):
+                print(f"Sensor binary not found: {BINARY_PATH}")
+                return
+            result = subprocess.run([BINARY_PATH], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Sensor read failed (exit {result.returncode}). Is sen6x.service running?")
+                return
             try:
-                with open(SENSOR_JSON, "r") as f:
-                    data = json.load(f)
-                print(f"Latest reading: {data.get('timestamp', 'unknown')}")
+                outer = json.loads(result.stdout)
+                data = outer.get("sen6x", outer)
+                print(f"Latest reading: {data.get('measured_at', 'unknown')}")
                 for key, (label, unit) in FIELD_LABELS.items():
                     if key in data:
                         print(f"  {label:<12} {data[key]}{unit}")
-            except FileNotFoundError:
-                print("No readings found. Is sen6x.service running?")
+            except (json.JSONDecodeError, KeyError):
+                print("Could not parse sensor output.")
             return
 
     print("Usage: schoolair [-v | --status]")

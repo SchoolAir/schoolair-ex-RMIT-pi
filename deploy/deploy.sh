@@ -37,8 +37,8 @@ else
     log "No token found — device will need wizard registration on first boot"
 fi
 
-# ── 4. Build sen6x C daemon ───────────────────────────────────────────────────
-log "Building sen6x daemon…"
+# ── 4. Build sen6x binaries ───────────────────────────────────────────────────
+log "Building sen6x binaries…"
 DAEMON_SRC="$SCHOOLAIR_DIR/i2c/sen6x"
 DAEMON_DST="/home/admin/i2c/sen6x"
 
@@ -46,12 +46,13 @@ if ! command -v gcc &>/dev/null; then
     die "gcc not found — install build-essential: sudo apt install build-essential"
 fi
 
-(cd "$DAEMON_SRC" && make -f Makefile.daemon -B --silent) || die "Daemon build failed"
+(cd "$DAEMON_SRC" && make -f Makefile.daemon -B --silent) || die "Build failed"
 
 mkdir -p "$DAEMON_DST"
-cp "$DAEMON_SRC/sen6x_d" "$DAEMON_DST/sen6x_d"
-chmod +x "$DAEMON_DST/sen6x_d"
-ok "sen6x daemon built and installed to $DAEMON_DST/sen6x_d"
+cp "$DAEMON_SRC/sen6x_d"    "$DAEMON_DST/sen6x_d"
+cp "$DAEMON_SRC/sen6x_read" "$DAEMON_DST/sen6x_read"
+chmod +x "$DAEMON_DST/sen6x_d" "$DAEMON_DST/sen6x_read"
+ok "sen6x binaries built and installed to $DAEMON_DST"
 
 # ── 5. Install systemd service files ─────────────────────────────────────────
 log "Installing service files…"
@@ -90,12 +91,12 @@ sudo systemctl enable schoolair-launcher.service
 # schoolair-wizard.service is NOT enabled — the launcher starts it on demand.
 ok "Services enabled"
 
-# ── 10. Start sen6x daemon (schoolair.service depends on it) ─────────────────
+# ── 10. Run sen6x initialisation (schoolair.service depends on it) ───────────
 if ! sudo systemctl is-active --quiet sen6x.service; then
     sudo systemctl start sen6x.service
     sleep 2
 fi
-ok "sen6x.service is running"
+ok "sen6x.service initialisation complete"
 
 # ── 11. Start the telemetry service ──────────────────────────────────────────
 log "Starting schoolair.service…"

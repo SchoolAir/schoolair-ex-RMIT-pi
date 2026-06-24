@@ -16,7 +16,7 @@
 #   4.  Python dependencies
 #   5.  Device utility scripts  →  ~/  (first_boot.sh, set_hostname.sh, add_wifi.sh, schoolair)
 #   6.  Registration wizard TLS certificate
-#   7.  Build sen6x daemon
+#   7.  Build sen6x binaries
 #   8.  I2C enable + 100 kHz baudrate
 #   9.  NetworkManager Wi-Fi hotspot (SchoolAir_Setup, open)
 #   10. Captive-portal DNS hijacking via NM dnsmasq plugin
@@ -365,6 +365,6 @@ echo "  Logs:"
 echo "    journalctl -u schoolair-launcher -u schoolair-wizard -u schoolair -f"
 echo
 echo "  Developer notes (re-run only):"
-echo -e "  ${YELLOW}➜${NC}  sen6x daemon was stopped to allow binary replacement."
-echo "     Start it now without rebooting:  sudo systemctl start sen6x"
+echo -e "  ${YELLOW}➜${NC}  sen6x binaries were replaced."
+echo "     Re-run initialisation without rebooting:  sudo systemctl restart sen6x"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
