@@ -3,7 +3,7 @@
 Unit tests for services.sensor.
 
   LAPTOP-SAFE: extract_metric(), read_sensor() with mocked subprocess.
-  HARDWARE:    read_sensor() against the real SEN6x daemon.
+  HARDWARE:    read_sensor() against the real SEN6x sensor.
 """
 
 import json
@@ -12,7 +12,16 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import services.sensor as sensor_module
 from services.sensor import extract_metric, read_sensor
+
+
+@pytest.fixture(autouse=True)
+def reset_sensor_state():
+    """Reset module-level failure counter between tests."""
+    sensor_module._consecutive_failures = 0
+    yield
+    sensor_module._consecutive_failures = 0
 
 
 # ── extract_metric ─────────────────────────────────────────────────────────────
@@ -140,11 +149,58 @@ def test_read_sensor_raises_on_timeout():
             read_sensor()
 
 
+# ── Re-init / failure counting ─────────────────────────────────────────────────
+
+def test_failure_counter_increments_on_error():
+    with patch("subprocess.run", return_value=_mock_run(returncode=1)):
+        with pytest.raises(RuntimeError):
+            read_sensor()
+    assert sensor_module._consecutive_failures == 1
+
+
+def test_failure_counter_resets_on_success():
+    sensor_module._consecutive_failures = 3
+    good = json.dumps({"sen6x": {"temp": 22.0}})
+    with patch("subprocess.run", return_value=_mock_run(stdout=good)):
+        read_sensor()
+    assert sensor_module._consecutive_failures == 0
+
+
+def test_reinit_triggered_at_threshold(monkeypatch):
+    monkeypatch.setattr(sensor_module, "_REINIT_BIN", "/fake/sen6x_read")
+    with patch("subprocess.run", return_value=_mock_run(returncode=1)):
+        with patch.object(sensor_module, "_try_reinit") as mock_reinit:
+            for _ in range(sensor_module._REINIT_AFTER):
+                with pytest.raises(RuntimeError):
+                    read_sensor()
+    mock_reinit.assert_called_once()
+
+
+def test_reinit_not_triggered_before_threshold(monkeypatch):
+    monkeypatch.setattr(sensor_module, "_REINIT_BIN", "/fake/sen6x_read")
+    with patch("subprocess.run", return_value=_mock_run(returncode=1)):
+        with patch.object(sensor_module, "_try_reinit") as mock_reinit:
+            for _ in range(sensor_module._REINIT_AFTER - 1):
+                with pytest.raises(RuntimeError):
+                    read_sensor()
+    mock_reinit.assert_not_called()
+
+
+def test_reinit_skipped_when_reinit_bin_empty(monkeypatch):
+    monkeypatch.setattr(sensor_module, "_REINIT_BIN", "")
+    sensor_module._consecutive_failures = sensor_module._REINIT_AFTER - 1
+    with patch("subprocess.run", return_value=_mock_run(returncode=1)):
+        with patch.object(sensor_module, "_try_reinit") as mock_reinit:
+            with pytest.raises(RuntimeError):
+                read_sensor()
+    mock_reinit.assert_not_called()
+
+
 # ── Hardware ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.hardware
 def test_read_sensor_real_hardware():
-    """Call the actual sensor script. Requires Pi + SEN6x daemon running."""
+    """Call the actual sensor script. Requires Pi + sen6x.service initialised."""
     data = read_sensor()
     assert "sen6x" in data
     assert isinstance(extract_metric(data, "co2"), float)
