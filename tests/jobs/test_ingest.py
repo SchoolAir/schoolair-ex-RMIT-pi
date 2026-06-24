@@ -9,7 +9,7 @@ Run laptop-safe tests only:
 """
 
 import asyncio
-from datetime import time
+from datetime import time, datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -25,21 +25,18 @@ from jobs.ingest import (
     _buffer_alert,
     _do_verify,
     _run_drain,
+    _run_read,
+    _should_drain,
     trigger_drain,
     ALERT_NEAR_PCT,
     ALERT_BUFFER_CAPACITY,
+    READ_ACTIVE_SECONDS  as READ_ACTIVE,
+    READ_IDLE_SECONDS    as READ_IDLE,
+    DRAIN_ACTIVE_SECONDS as DRAIN_ACTIVE,
+    DRAIN_IDLE_SECONDS   as DRAIN_IDLE,
 )
 
-READ_ACTIVE  = 300
-READ_IDLE    = 900
-DRAIN_ACTIVE = 1800
-DRAIN_IDLE   = 7200
-
 S = {
-    "interval_read_active":  READ_ACTIVE,
-    "interval_read_idle":    READ_IDLE,
-    "interval_drain_active": DRAIN_ACTIVE,
-    "interval_drain_idle":   DRAIN_IDLE,
     "active_window": {"start": "07:00", "end": "16:00"},
 }
 
@@ -53,9 +50,11 @@ def reset_ingest_state():
     ingest._buffer.clear()
     ingest._verifying.clear()
     ingest.alert_cooldown.clear()
+    ingest._last_drained_at = None
     yield
     ingest._alert_buffer.clear()
     ingest._buffer.clear()
+    ingest._last_drained_at = None
 
 
 @pytest.fixture
@@ -280,3 +279,114 @@ def test_buffer_correction_preserves_nested_shape():
     assert data["sen6x"]["temp"] == 25.0
     assert data["ts"] == "2026-06-23"
     assert "co2" not in data
+
+
+# ── Read-triggered drain ───────────────────────────────────────────────────────
+
+async def test_run_read_triggers_drain_when_interval_elapsed(monkeypatch):
+    """A standard read triggers drain once the drain interval has elapsed."""
+    ingest._last_drained_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE + 10)
+    )
+    triggered = []
+    monkeypatch.setattr(ingest, "trigger_drain", lambda: triggered.append(1))
+
+    with patch("jobs.ingest.read_sensor", return_value={"sen6x": {"co2": 400}}), \
+         patch("jobs.ingest.load_criteria", return_value=[]), \
+         patch("jobs.ingest.state"):
+        await _run_read(S)
+
+    assert triggered, "trigger_drain should be called after drain interval elapses"
+
+
+async def test_run_read_does_not_trigger_drain_before_interval(monkeypatch):
+    """A read does not trigger drain when the interval has not yet elapsed."""
+    ingest._last_drained_at = datetime.now(timezone.utc)  # just drained
+    triggered = []
+    monkeypatch.setattr(ingest, "trigger_drain", lambda: triggered.append(1))
+
+    with patch("jobs.ingest.read_sensor", return_value={"sen6x": {"co2": 400}}), \
+         patch("jobs.ingest.load_criteria", return_value=[]), \
+         patch("jobs.ingest.state"):
+        await _run_read(S)
+
+    assert not triggered, "trigger_drain must not be called before drain interval"
+
+
+async def test_run_read_does_not_trigger_drain_during_verification(monkeypatch):
+    """During alert verification _verifying is non-empty; drain must be suppressed."""
+    ingest._last_drained_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE + 10)
+    )
+    ingest._verifying.add("co2")
+    triggered = []
+    monkeypatch.setattr(ingest, "trigger_drain", lambda: triggered.append(1))
+
+    with patch("jobs.ingest.read_sensor", return_value={"sen6x": {"co2": 400}}), \
+         patch("jobs.ingest.load_criteria", return_value=[]), \
+         patch("jobs.ingest.state"):
+        await _run_read(S)
+
+    assert not triggered, "trigger_drain must be suppressed during alert verification"
+
+
+async def test_run_read_does_not_trigger_drain_on_sensor_error(monkeypatch):
+    """A failed sensor read returns early without touching the drain logic."""
+    ingest._last_drained_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE + 10)
+    )
+    triggered = []
+    monkeypatch.setattr(ingest, "trigger_drain", lambda: triggered.append(1))
+
+    with patch("jobs.ingest.read_sensor", side_effect=RuntimeError("sensor off")):
+        await _run_read(S)
+
+    assert not triggered, "trigger_drain must not be called when sensor read fails"
+    assert ingest._buffer == [], "nothing should be buffered on sensor error"
+
+
+def test_should_drain_false_when_never_drained():
+    """_should_drain returns False at startup (initial drain handled by _drain_loop)."""
+    assert ingest._last_drained_at is None
+    assert _should_drain(S) is False
+
+
+def test_should_drain_true_after_interval_elapsed():
+    """_should_drain returns True once the drain interval has passed."""
+    ingest._last_drained_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE + 1)
+    )
+    assert _should_drain(S) is True
+
+
+def test_should_drain_false_before_interval_elapsed():
+    """_should_drain returns False when the drain interval has not yet passed."""
+    ingest._last_drained_at = datetime.now(timezone.utc)
+    assert _should_drain(S) is False
+
+
+# ── Option 1: buffer slice on POST success ─────────────────────────────────────
+
+async def test_run_drain_does_not_discard_reading_added_during_post(tmp_db, monkeypatch):
+    """Reading appended to _buffer during the async POST is preserved after drain."""
+    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    initial_entry = {"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"}
+    concurrent_entry = {"data": {"sen6x": {"co2": 410}}, "recorded_at": "2026-06-23T10:05:00+00:00"}
+    ingest._buffer.append(initial_entry)
+
+    async def fake_post(client, measurements):
+        # Simulate a reading arriving during the HTTP call
+        ingest._buffer.append(concurrent_entry)
+        return {}
+
+    with patch("jobs.ingest.aggregate.run_aggregation",
+               return_value={"buckets": 0, "rows_in": 0, "rows_removed": 0}), \
+         patch("jobs.ingest._post_batch", new=fake_post), \
+         patch("jobs.ingest._drain_alerts"):
+        await _run_drain(S)
+
+    assert ingest._buffer == [concurrent_entry], (
+        "the reading added during POST must survive — only the pre-POST entries are cleared"
+    )

@@ -1,6 +1,6 @@
 # Automated Test Suite
 
-87 tests across 7 modules. All tests are laptop-safe except one hardware test
+95 tests across 7 modules. All tests are laptop-safe except one hardware test
 that calls the real SEN6x I2C daemon on a Pi.
 
 ---
@@ -33,12 +33,12 @@ All tests are async-aware via `asyncio_mode = "auto"` (set in `pyproject.toml`).
 |---|---|---|---|
 | `db/test_queue.py` | 18 | — | SQLite measurements + alerts queue |
 | `jobs/test_aggregate.py` | 5 | — | Hourly aggregation of old rows |
-| `jobs/test_ingest.py` | 30 | — | Scheduling, breach detection, alert buffer, drain |
+| `jobs/test_ingest.py` | 38 | — | Scheduling, breach detection, alert buffer, drain, read-triggered drain |
 | `registration_wizard/test_wizard.py` | 7 | — | Token detection, idle watchdog exits |
 | `services/test_sensor.py` | 16 | 1 | Sensor data parsing + subprocess call |
 | `test_main.py` | 4 | — | SIGTERM flush of both buffers to SQLite |
 | `test_setup.py` | 7 | — | `.env` token write + startup registration gate |
-| **Total** | **87** | **1** | |
+| **Total** | **95** | **1** | |
 
 ---
 
@@ -89,11 +89,11 @@ into one hourly mean row per hour bucket.
 
 ---
 
-## `jobs/test_ingest.py` — Ingest pipeline (30 tests)
+## `jobs/test_ingest.py` — Ingest pipeline (38 tests)
 
 The largest module. Covers scheduling, breach detection, alert buffering, the
-`trigger_drain` event mechanism, the no-token drain guard, and the nested-data
-buffer correction that fires on a transient spike.
+`trigger_drain` event mechanism, the no-token drain guard, the nested-data
+buffer correction on transient spikes, and the read-triggered drain logic.
 
 **Read interval scheduling** (5 tests)
 - `test_read_inside_window` / `test_read_before_window` — active vs idle interval selected correctly
@@ -126,6 +126,16 @@ buffer correction that fires on a transient spike.
 **Buffer correction on transient spike** (2 tests)
 - `test_do_verify_patches_nested_data_on_transient_spike` — full async test of `_do_verify`: Stage 1 reads return a value well below threshold, so the breach entry's nested data dict is rewritten with the Stage 1 average; the sensor sub-dict key is preserved and the metric is not flattened to the top level
 - `test_buffer_correction_preserves_nested_shape` — unit test of the dict-rewriting logic alone: spread operator rebuild preserves all other fields in the sensor dict and at the top level
+
+**Read-triggered drain** (4 async tests + 3 unit tests + 1 async integration test)
+- `test_run_read_triggers_drain_when_interval_elapsed` — a standard read calls `trigger_drain` once the drain interval has elapsed since the last drain
+- `test_run_read_does_not_trigger_drain_before_interval` — drain is not triggered when the interval has not yet elapsed
+- `test_run_read_does_not_trigger_drain_during_verification` — `_verifying` is non-empty during alert checks; drain trigger is suppressed to avoid interrupting a verification sequence
+- `test_run_read_does_not_trigger_drain_on_sensor_error` — a failed sensor read returns early; nothing is buffered and drain is not triggered
+- `test_should_drain_false_when_never_drained` — `_should_drain` returns `False` at startup (`_last_drained_at is None`); the initial drain in `_drain_loop` handles startup
+- `test_should_drain_true_after_interval_elapsed` — returns `True` once the drain interval has passed
+- `test_should_drain_false_before_interval_elapsed` — returns `False` when the interval has not yet passed
+- `test_run_drain_does_not_discard_reading_added_during_post` — a reading appended to `_buffer` during the async POST is preserved after the drain completes; only the pre-POST entries are removed (`del _buffer[:n_buffered]` not `_buffer.clear()`)
 
 ---
 
