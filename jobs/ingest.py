@@ -144,6 +144,20 @@ def current_drain_interval(settings: dict, now: time | None = None) -> int:
     return DRAIN_ACTIVE_SECONDS if _in_active_window(settings, now) else DRAIN_IDLE_SECONDS
 
 
+def _seconds_to_next_boundary(interval: int, now: datetime | None = None) -> float:
+    """Seconds until the next wall-clock multiple of *interval* seconds.
+
+    Uses the Unix epoch as reference — valid because 300 and 900 both divide
+    evenly into 86400, so :00/:05/… and :00/:15/… boundaries align to whole
+    minutes regardless of date.  Callers always land on the same grid, so
+    accumulated per-read latency never carries forward.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    past = now.timestamp() % interval
+    return float(interval - past)
+
+
 # --------------------------- Criteria ---------------------------
 
 
@@ -683,9 +697,10 @@ async def _read_loop(settings: dict):
 
         await _run_read(settings)
         interval = current_read_interval(settings)
+        delay = _seconds_to_next_boundary(interval)
         mode = "active" if curr_active else "idle"
-        print(f"[read/{mode}] next in {interval}s")
-        await asyncio.sleep(interval)
+        print(f"[read/{mode}] next in {delay:.0f}s")
+        await asyncio.sleep(delay)
 
 
 async def _drain_loop(settings: dict):

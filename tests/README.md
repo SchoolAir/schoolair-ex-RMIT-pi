@@ -1,6 +1,6 @@
 # Automated Test Suite
 
-100 tests across 7 modules. All tests are laptop-safe except one hardware test
+103 tests across 7 modules. All tests are laptop-safe except one hardware test
 that calls the real SEN6x I2C daemon on a Pi.
 
 ---
@@ -33,7 +33,7 @@ All tests are async-aware via `asyncio_mode = "auto"` (set in `pyproject.toml`).
 |---|---|---|---|
 | `db/test_queue.py` | 18 | — | SQLite measurements + alerts queue |
 | `jobs/test_aggregate.py` | 5 | — | Hourly aggregation of old rows |
-| `jobs/test_ingest.py` | 43 | — | Scheduling, breach detection, alert buffer, drain, read-triggered drain, window transitions |
+| `jobs/test_ingest.py` | 46 | — | Scheduling, clock-boundary sleep, breach detection, alert buffer, drain, read-triggered drain, window transitions |
 | `registration_wizard/test_wizard.py` | 7 | — | Token detection, idle watchdog exits |
 | `services/test_sensor.py` | 16 | 1 | Sensor data parsing + subprocess call |
 | `test_main.py` | 4 | — | SIGTERM flush of both buffers to SQLite |
@@ -94,6 +94,11 @@ into one hourly mean row per hour bucket.
 The largest module. Covers scheduling, breach detection, alert buffering, the
 `trigger_drain` event mechanism, the no-token drain guard, the nested-data
 buffer correction on transient spikes, and the read-triggered drain logic.
+
+**Clock-boundary sleep** (3 tests)
+- `test_next_boundary_mid_interval` — 5 s past a 300 s boundary → sleep 295 s, not 300 s
+- `test_next_boundary_exactly_on_boundary` — exactly on a boundary → sleep the full interval to the next one
+- `test_next_boundary_idle_interval` — 5 s past a 900 s boundary (7:45:05) → sleep 895 s to land at 8:00:00
 
 **Read interval scheduling** (5 tests)
 - `test_read_inside_window` / `test_read_before_window` — active vs idle interval selected correctly

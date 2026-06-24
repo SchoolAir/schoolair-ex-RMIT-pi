@@ -18,6 +18,7 @@ import db.queue as queue
 from jobs.ingest import (
     current_read_interval,
     current_drain_interval,
+    _seconds_to_next_boundary,
     _window_hours,
     validate_settings,
     _breached,
@@ -94,6 +95,24 @@ def test_drain_before_window():
 
 def test_drain_end_is_exclusive():
     assert current_drain_interval(S, time(16, 0)) == DRAIN_IDLE
+
+
+# ── Clock-boundary sleep ───────────────────────────────────────────────────────
+
+def test_next_boundary_mid_interval():
+    """5 s past a 300 s boundary → sleep 295 s to the next :05 mark."""
+    t = datetime(2026, 1, 1, 8, 0, 5, tzinfo=timezone.utc)  # 8:00:05
+    assert _seconds_to_next_boundary(300, now=t) == pytest.approx(295.0, abs=0.01)
+
+def test_next_boundary_exactly_on_boundary():
+    """Exactly on a 300 s boundary → sleep the full 300 s to the next one."""
+    t = datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc)  # 8:00:00
+    assert _seconds_to_next_boundary(300, now=t) == pytest.approx(300.0, abs=0.01)
+
+def test_next_boundary_idle_interval():
+    """5 s past a 900 s boundary (7:45:05) → sleep 895 s to land at 8:00:00."""
+    t = datetime(2026, 1, 1, 7, 45, 5, tzinfo=timezone.utc)
+    assert _seconds_to_next_boundary(900, now=t) == pytest.approx(895.0, abs=0.01)
 
 
 # ── Window helpers ─────────────────────────────────────────────────────────────
