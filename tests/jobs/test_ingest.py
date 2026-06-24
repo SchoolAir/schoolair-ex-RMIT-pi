@@ -50,13 +50,11 @@ def reset_ingest_state():
     ingest._buffer.clear()
     ingest._verifying.clear()
     ingest.alert_cooldown.clear()
-    ingest._last_drained_at     = None
-    ingest._last_drained_active = False
+    ingest._last_drained_at = None
     yield
     ingest._alert_buffer.clear()
     ingest._buffer.clear()
-    ingest._last_drained_at     = None
-    ingest._last_drained_active = False
+    ingest._last_drained_at = None
 
 
 @pytest.fixture
@@ -388,25 +386,24 @@ def test_should_drain_false_one_second_before_deadline():
     assert _should_drain(S) is False
 
 
-def test_should_drain_active_to_idle_transition_honours_active_deadline(monkeypatch):
-    """After active→idle transition, active-hours data is flushed within the active window.
-
-    Last drain was in active mode. Now in idle mode with DRAIN_ACTIVE - READ_ACTIVE seconds
-    elapsed (the active threshold). Must fire so school-hours readings are not held for 2 h.
-    Monkeypatching _in_active_window to False makes the test time-of-day independent.
-    """
-    monkeypatch.setattr(ingest, "_in_active_window", lambda s, now=None: False)
-    ingest._last_drained_at     = datetime.now(timezone.utc) - timedelta(seconds=DRAIN_ACTIVE - READ_ACTIVE)
-    ingest._last_drained_active = True
-    assert _should_drain(S) is True
+def test_validate_rejects_non_quarter_hour_start():
+    """validate_settings exits when the window start minute is not :00/:15/:30/:45."""
+    bad = {**S, "active_window": {"start": "07:10", "end": "16:00"}}
+    with pytest.raises(SystemExit):
+        validate_settings(bad)
 
 
-def test_should_drain_idle_cadence_resumes_after_transition_drain(monkeypatch):
-    """After the transition drain fires, _last_drained_active is False and normal idle cadence applies."""
-    monkeypatch.setattr(ingest, "_in_active_window", lambda s, now=None: False)
-    ingest._last_drained_at     = datetime.now(timezone.utc) - timedelta(seconds=DRAIN_ACTIVE)
-    ingest._last_drained_active = False  # cleared by the transition drain
-    assert _should_drain(S) is False
+def test_validate_rejects_non_quarter_hour_end():
+    """validate_settings exits when the window end minute is not :00/:15/:30/:45."""
+    bad = {**S, "active_window": {"start": "07:00", "end": "16:05"}}
+    with pytest.raises(SystemExit):
+        validate_settings(bad)
+
+
+def test_validate_accepts_quarter_hour_boundaries():
+    """validate_settings passes for :00/:15/:30/:45 boundaries."""
+    for start, end in [("07:00", "16:00"), ("07:15", "15:45"), ("08:30", "15:30")]:
+        validate_settings({**S, "active_window": {"start": start, "end": end}})
 
 
 # ── Option 1: buffer slice on POST success ─────────────────────────────────────

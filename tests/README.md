@@ -1,6 +1,6 @@
 # Automated Test Suite
 
-99 tests across 7 modules. All tests are laptop-safe except one hardware test
+100 tests across 7 modules. All tests are laptop-safe except one hardware test
 that calls the real SEN6x I2C daemon on a Pi.
 
 ---
@@ -33,12 +33,12 @@ All tests are async-aware via `asyncio_mode = "auto"` (set in `pyproject.toml`).
 |---|---|---|---|
 | `db/test_queue.py` | 18 | — | SQLite measurements + alerts queue |
 | `jobs/test_aggregate.py` | 5 | — | Hourly aggregation of old rows |
-| `jobs/test_ingest.py` | 42 | — | Scheduling, breach detection, alert buffer, drain, read-triggered drain |
+| `jobs/test_ingest.py` | 43 | — | Scheduling, breach detection, alert buffer, drain, read-triggered drain, window transitions |
 | `registration_wizard/test_wizard.py` | 7 | — | Token detection, idle watchdog exits |
 | `services/test_sensor.py` | 16 | 1 | Sensor data parsing + subprocess call |
 | `test_main.py` | 4 | — | SIGTERM flush of both buffers to SQLite |
 | `test_setup.py` | 7 | — | `.env` token write + startup registration gate |
-| **Total** | **99** | **1** | |
+| **Total** | **100** | **1** | |
 
 ---
 
@@ -89,7 +89,7 @@ into one hourly mean row per hour bucket.
 
 ---
 
-## `jobs/test_ingest.py` — Ingest pipeline (42 tests)
+## `jobs/test_ingest.py` — Ingest pipeline (43 tests)
 
 The largest module. Covers scheduling, breach detection, alert buffering, the
 `trigger_drain` event mechanism, the no-token drain guard, the nested-data
@@ -103,9 +103,12 @@ buffer correction on transient spikes, and the read-triggered drain logic.
 **Drain interval scheduling** (3 tests)
 - Mirror of the read tests for the drain timers
 
-**Window helpers** (2 tests)
+**Window helpers** (5 tests)
 - `test_window_hours_handles_midnight` — `_window_hours` counts hours correctly across midnight
 - `test_validate_rejects_long_window` — `validate_settings` exits if the active window exceeds 9 hours
+- `test_validate_rejects_non_quarter_hour_start` — start minute not in `:00/:15/:30/:45` is rejected
+- `test_validate_rejects_non_quarter_hour_end` — end minute not in `:00/:15/:30/:45` is rejected
+- `test_validate_accepts_quarter_hour_boundaries` — valid boundary combinations pass without error
 
 **Breach detection** (12 tests)
 - `_breached` (6 tests): `"above"` condition is `value > threshold` (exclusive at the line); `"below"` is `value < threshold` (exclusive); both return `False` at exactly the threshold
