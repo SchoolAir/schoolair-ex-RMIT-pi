@@ -89,7 +89,7 @@ into one hourly mean row per hour bucket.
 
 ---
 
-## `jobs/test_ingest.py` — Ingest pipeline (38 tests)
+## `jobs/test_ingest.py` — Ingest pipeline (40 tests)
 
 The largest module. Covers scheduling, breach detection, alert buffering, the
 `trigger_drain` event mechanism, the no-token drain guard, the nested-data
