@@ -365,6 +365,27 @@ def test_should_drain_false_before_interval_elapsed():
     assert _should_drain(S) is False
 
 
+def test_should_drain_triggers_one_read_before_deadline():
+    """Drain fires when exactly drain_interval - read_interval seconds have elapsed.
+
+    The criterion is: 'would skipping this read cause the deadline to be missed?'
+    At elapsed = drain_interval - read_interval the answer is yes (the next read
+    would land after the deadline), so _should_drain must return True here.
+    """
+    ingest._last_drained_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE - READ_IDLE)
+    )
+    assert _should_drain(S) is True
+
+
+def test_should_drain_false_one_second_before_deadline():
+    """One second before the trigger point, _should_drain is still False."""
+    ingest._last_drained_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE - READ_IDLE - 1)
+    )
+    assert _should_drain(S) is False
+
+
 # ── Option 1: buffer slice on POST success ─────────────────────────────────────
 
 async def test_run_drain_does_not_discard_reading_added_during_post(tmp_db, monkeypatch):

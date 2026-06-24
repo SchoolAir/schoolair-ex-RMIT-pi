@@ -475,11 +475,17 @@ async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> di
 
 
 def _should_drain(settings: dict) -> bool:
-    """True if enough time has elapsed since the last drain to justify one now."""
+    """True if skipping this read would cause the drain interval to be exceeded.
+
+    Fires when the time remaining until the drain deadline is less than one read
+    interval — i.e. the next scheduled read would arrive after the deadline.
+    This guarantees drains happen *within* the configured interval (25–30 min
+    active, 105–120 min idle) rather than potentially one read interval late.
+    """
     if _last_drained_at is None:
         return False  # let the initial drain in _drain_loop handle startup
     elapsed = (datetime.now(timezone.utc) - _last_drained_at).total_seconds()
-    return elapsed >= current_drain_interval(settings)
+    return elapsed >= current_drain_interval(settings) - current_read_interval(settings)
 
 
 async def _run_read(settings: dict):
