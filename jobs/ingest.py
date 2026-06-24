@@ -65,8 +65,9 @@ ALERT_BUFFER_CAPACITY = int(os.getenv("ALERT_BUFFER_CAPACITY", 50))
 
 # Set by trigger_drain() (SIGUSR2 handler or internal callers) to wake the
 # drain loop.  Initialised to None until the event loop is running.
-_drain_trigger:   asyncio.Event | None = None
-_last_drained_at: datetime | None     = None
+_drain_trigger:        asyncio.Event | None = None
+_last_drained_at:      datetime | None     = None
+_last_drained_active:  bool                = False  # was the last drain during active hours?
 
 
 def trigger_drain() -> None:
@@ -475,17 +476,27 @@ async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> di
 
 
 def _should_drain(settings: dict) -> bool:
-    """True if skipping this read would cause the drain interval to be exceeded.
+    """True if skipping this read would cause the drain deadline to be missed.
 
     Fires when the time remaining until the drain deadline is less than one read
     interval — i.e. the next scheduled read would arrive after the deadline.
-    This guarantees drains happen *within* the configured interval (25–30 min
-    active, 105–120 min idle) rather than potentially one read interval late.
+    This guarantees drains happen *within* the configured interval.
+
+    Special case: if the last drain was during active hours but we are now in
+    idle mode (just crossed 16:00), we still honour the active drain ceiling so
+    that school-hours readings are not held for up to 2 h.  After the first idle
+    drain the flag clears and normal idle cadence resumes.
     """
     if _last_drained_at is None:
         return False  # let the initial drain in _drain_loop handle startup
     elapsed = (datetime.now(timezone.utc) - _last_drained_at).total_seconds()
-    return elapsed >= current_drain_interval(settings) - current_read_interval(settings)
+    read_interval  = current_read_interval(settings)
+    drain_interval = current_drain_interval(settings)
+    if _last_drained_active and not _in_active_window(settings):
+        # Active→idle transition: apply the stricter active deadline so
+        # school-hours data is flushed within the active drain window.
+        drain_interval = DRAIN_ACTIVE_SECONDS
+    return elapsed >= drain_interval - read_interval
 
 
 async def _run_read(settings: dict):
@@ -543,7 +554,7 @@ async def _run_drain(settings: dict):
       2. The server is unreachable.
     All other drain attempts go memory → server with no disk I/O.
     """
-    global _buffer, _last_drained_at
+    global _buffer, _last_drained_at, _last_drained_active
 
     # Compact old SQLite rows into hourly means (no-op when SQLite is empty)
     try:
@@ -561,7 +572,8 @@ async def _run_drain(settings: dict):
         if dropped:
             print(f"SQLite queue over cap — discarded {dropped} oldest aggregated row(s)")
 
-    _last_drained_at = datetime.now(timezone.utc)
+    _last_drained_at     = datetime.now(timezone.utc)
+    _last_drained_active = _in_active_window(settings)
 
     token = os.getenv("AUTH_TOKEN", "").strip()
     if not token:

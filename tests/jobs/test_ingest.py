@@ -50,11 +50,13 @@ def reset_ingest_state():
     ingest._buffer.clear()
     ingest._verifying.clear()
     ingest.alert_cooldown.clear()
-    ingest._last_drained_at = None
+    ingest._last_drained_at     = None
+    ingest._last_drained_active = False
     yield
     ingest._alert_buffer.clear()
     ingest._buffer.clear()
-    ingest._last_drained_at = None
+    ingest._last_drained_at     = None
+    ingest._last_drained_active = False
 
 
 @pytest.fixture
@@ -383,6 +385,27 @@ def test_should_drain_false_one_second_before_deadline():
     ingest._last_drained_at = (
         datetime.now(timezone.utc) - timedelta(seconds=DRAIN_IDLE - READ_IDLE - 1)
     )
+    assert _should_drain(S) is False
+
+
+def test_should_drain_active_to_idle_transition_honours_active_deadline(monkeypatch):
+    """After active→idle transition, active-hours data is flushed within the active window.
+
+    Last drain was in active mode. Now in idle mode with DRAIN_ACTIVE - READ_ACTIVE seconds
+    elapsed (the active threshold). Must fire so school-hours readings are not held for 2 h.
+    Monkeypatching _in_active_window to False makes the test time-of-day independent.
+    """
+    monkeypatch.setattr(ingest, "_in_active_window", lambda s, now=None: False)
+    ingest._last_drained_at     = datetime.now(timezone.utc) - timedelta(seconds=DRAIN_ACTIVE - READ_ACTIVE)
+    ingest._last_drained_active = True
+    assert _should_drain(S) is True
+
+
+def test_should_drain_idle_cadence_resumes_after_transition_drain(monkeypatch):
+    """After the transition drain fires, _last_drained_active is False and normal idle cadence applies."""
+    monkeypatch.setattr(ingest, "_in_active_window", lambda s, now=None: False)
+    ingest._last_drained_at     = datetime.now(timezone.utc) - timedelta(seconds=DRAIN_ACTIVE)
+    ingest._last_drained_active = False  # cleared by the transition drain
     assert _should_drain(S) is False
 
 

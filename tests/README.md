@@ -1,6 +1,6 @@
 # Automated Test Suite
 
-97 tests across 7 modules. All tests are laptop-safe except one hardware test
+99 tests across 7 modules. All tests are laptop-safe except one hardware test
 that calls the real SEN6x I2C daemon on a Pi.
 
 ---
@@ -33,12 +33,12 @@ All tests are async-aware via `asyncio_mode = "auto"` (set in `pyproject.toml`).
 |---|---|---|---|
 | `db/test_queue.py` | 18 | — | SQLite measurements + alerts queue |
 | `jobs/test_aggregate.py` | 5 | — | Hourly aggregation of old rows |
-| `jobs/test_ingest.py` | 40 | — | Scheduling, breach detection, alert buffer, drain, read-triggered drain |
+| `jobs/test_ingest.py` | 42 | — | Scheduling, breach detection, alert buffer, drain, read-triggered drain |
 | `registration_wizard/test_wizard.py` | 7 | — | Token detection, idle watchdog exits |
 | `services/test_sensor.py` | 16 | 1 | Sensor data parsing + subprocess call |
 | `test_main.py` | 4 | — | SIGTERM flush of both buffers to SQLite |
 | `test_setup.py` | 7 | — | `.env` token write + startup registration gate |
-| **Total** | **97** | **1** | |
+| **Total** | **99** | **1** | |
 
 ---
 
@@ -89,7 +89,7 @@ into one hourly mean row per hour bucket.
 
 ---
 
-## `jobs/test_ingest.py` — Ingest pipeline (40 tests)
+## `jobs/test_ingest.py` — Ingest pipeline (42 tests)
 
 The largest module. Covers scheduling, breach detection, alert buffering, the
 `trigger_drain` event mechanism, the no-token drain guard, the nested-data
@@ -140,6 +140,8 @@ The drain criterion is: "would skipping this read cause the drain interval to be
 - `test_should_drain_false_before_interval_elapsed` — returns `False` when the deadline is far away
 - `test_should_drain_triggers_one_read_before_deadline` — returns `True` at exactly `drain_interval − read_interval` elapsed; pins the criterion so the subtraction is not accidentally removed
 - `test_should_drain_false_one_second_before_deadline` — returns `False` one second before the trigger point
+- `test_should_drain_active_to_idle_transition_honours_active_deadline` — when the last drain was in active mode and we are now in idle mode, the active drain ceiling still applies; prevents school-hours readings from sitting for 2 h after 16:00
+- `test_should_drain_idle_cadence_resumes_after_transition_drain` — once the transition drain fires (clearing `_last_drained_active`), normal 2-hour idle cadence resumes
 - `test_run_drain_does_not_discard_reading_added_during_post` — a reading appended to `_buffer` during the async POST is preserved after the drain completes; only the pre-POST entries are removed (`del _buffer[:n_buffered]` not `_buffer.clear()`)
 
 ---
