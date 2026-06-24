@@ -161,7 +161,7 @@ writes `AUTH_TOKEN` to `.env` and restarts `schoolair.service`.
 To re-register a running device, visit `http://<pi-ip>:8080` and click
 **Re-register**.
 
----
+----
 
 ## Development
 
