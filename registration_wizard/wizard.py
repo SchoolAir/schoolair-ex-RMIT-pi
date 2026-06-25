@@ -922,6 +922,24 @@ def _get_cpu_serial() -> str:
     return "unknown"
 
 
+def _get_mac_address() -> str:
+    """Return MAC of eth0, wlan0, or the first available non-loopback interface."""
+    import pathlib
+    for iface in ("eth0", "wlan0"):
+        try:
+            return pathlib.Path(f"/sys/class/net/{iface}/address").read_text().strip()
+        except OSError:
+            pass
+    for p in pathlib.Path("/sys/class/net").iterdir():
+        if p.name == "lo":
+            continue
+        try:
+            return (p / "address").read_text().strip()
+        except OSError:
+            pass
+    return "unknown"
+
+
 # ── Cloud calls ───────────────────────────────────────────────────────────────
 
 async def _post_legacy_registration(org_token: str, nickname: str) -> tuple:
@@ -1243,6 +1261,7 @@ async def do_register(request):
             "nickname":      asset,
             "environment":   environment,
             "cpu_serial":    _get_cpu_serial(),
+            "mac_address":   _get_mac_address(),
             "registered_at": datetime.now(timezone.utc).isoformat(),
         }
         success, msg = await _post_heartbeat(payload)
@@ -1314,6 +1333,7 @@ async def configure_wifi(request):
             "nickname":      asset,
             "environment":   environment,
             "cpu_serial":    _get_cpu_serial(),
+            "mac_address":   _get_mac_address(),
             "registered_at": datetime.now(timezone.utc).isoformat(),
         }
         success, msg = await _post_heartbeat(payload)
