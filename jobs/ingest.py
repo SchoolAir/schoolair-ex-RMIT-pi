@@ -203,21 +203,11 @@ def _near_or_breached(value: float, threshold: float, condition: str) -> bool:
     return value <= threshold + margin  # "below" — near means slightly above the floor
 
 
-async def _take_verify_read(metric: str) -> float | None:
-    """Out-of-schedule sensor read during verification.
-
-    read_sensor() invokes sen6x_read as a subprocess, so every call is a
-    fresh hardware read.  No separate trigger step is needed.
-    """
-    recorded_at = datetime.now(timezone.utc).isoformat()
-    try:
-        data = read_sensor()
-    except RuntimeError as e:
-        print(f"[verify/{metric}] sensor read failed: {e}")
-        return None
-    state.set(data, recorded_at)
-    _buffer.append({"data": data, "recorded_at": recorded_at})
-    return extract_metric(data, metric)
+def _set_cooldown(breaching: list[tuple[str, dict]], now_dt: datetime | None = None) -> None:
+    if now_dt is None:
+        now_dt = datetime.now(timezone.utc)
+    for metric, _ in breaching:
+        alert_cooldown[metric] = now_dt
 
 
 def _buffer_alert(alert: dict):
@@ -252,142 +242,182 @@ def _log_queued_alert(alert: dict):
     )
 
 
-async def _do_verify(metric: str, criterion: dict, breach_entry: dict):
-    """Two-stage verification routine. Runs as a background task.
+async def _send_or_queue_alert(
+    metric: str,
+    criterion: dict,
+    entry: dict,
+    now_dt: datetime,
+    r1: dict,
+    r2: dict,
+    r3: dict,
+    r4: dict | None,
+) -> None:
+    """Build and immediately send an alert for one metric; queue on failure."""
+    threshold = float(criterion["threshold"])
+    condition = criterion["condition"]
 
-    Stage 1 — T+10s and T+30s:
-      avg < threshold  → transient spike (e.g. sweeping dust); patch breach value in buffer, stop.
-      avg at/near threshold → real but possibly fleeting; advance to Stage 2.
+    mv1 = extract_metric(r1, metric)
+    mv2 = extract_metric(r2, metric)
+    mv3 = extract_metric(r3, metric)
+    mv4 = extract_metric(r4, metric) if r4 is not None else None
 
-    Stage 2 — T+1m and T+2m:
-      avg < threshold  → fleeting event; log for dashboard, no active alarm.
-      avg at/near threshold → persistent breach; queue alert for sending at next drain.
+    avg1 = round((mv1 + mv2) / 2, 2) if (mv1 is not None and mv2 is not None) else None
+    avg2 = round((mv3 + mv4) / 2, 2) if (mv3 is not None and mv4 is not None) else None
 
-    Total time to confirmed alarm: ~2 minutes.
-    """
-    threshold   = float(criterion["threshold"])
-    condition   = criterion["condition"]
-    severity    = criterion["severity"]
-    breach_val  = extract_metric(breach_entry["data"], metric)
-    recorded_at = breach_entry["recorded_at"]
-
-    # ── Stage 1: T+10s and T+30s ──────────────────────────────────────────────
-    await asyncio.sleep(10)
-    v1 = await _take_verify_read(metric)
-    await asyncio.sleep(20)   # 20s more = T+30s total
-    v2 = await _take_verify_read(metric)
-
-    if v1 is None or v2 is None:
-        print(f"[verify/{metric}] sensor unavailable — aborting")
-        return
-
-    avg1 = (v1 + v2) / 2
-
-    if not _near_or_breached(avg1, threshold, condition):
-        # Transient spike — patch the buffer entry in-place so the server
-        # receives the corrected average instead of the momentary spike.
-        data = breach_entry["data"]
-        for sensor_name, sensor_data in data.items():
-            if isinstance(sensor_data, dict) and metric in sensor_data:
-                breach_entry["data"] = {
-                    **data,
-                    sensor_name: {**sensor_data, metric: round(avg1, 4)},
-                }
-                break
-        print(
-            f"[verify/{metric}] Stage 1 avg {avg1:.2f} is below threshold "
-            f"{threshold} — transient spike, breach value replaced"
-        )
-        return
-
-    print(
-        f"[verify/{metric}] Stage 1 avg {avg1:.2f} "
-        f"{'exceeds' if _breached(avg1, threshold, condition) else 'is near'} "
-        f"threshold {threshold} — advancing to Stage 2"
-    )
-
-    # ── Stage 2: T+1m and T+2m ────────────────────────────────────────────────
-    await asyncio.sleep(30)   # we're at T+30s → sleep 30s → T+1m
-    v3 = await _take_verify_read(metric)
-    await asyncio.sleep(60)   # T+1m → T+2m
-    v4 = await _take_verify_read(metric)
-
-    now = datetime.now(timezone.utc)
     try:
-        t = datetime.fromisoformat(recorded_at)
+        t = datetime.fromisoformat(entry["recorded_at"])
         if t.tzinfo is None:
             t = t.replace(tzinfo=timezone.utc)
-        delta_seconds = int((now - t).total_seconds())
+        delta = int((now_dt - t).total_seconds())
     except ValueError:
-        delta_seconds = None
+        delta = None
 
-    base_alert = {
+    alert = {
         "metric":        metric,
-        "value":         breach_val,
+        "value":         extract_metric(entry["data"], metric),
         "threshold":     threshold,
         "condition":     condition,
-        "severity":      severity,
-        "recorded_at":   recorded_at,
-        "delta_seconds": delta_seconds,
-        "stage1_avg":    round(avg1, 2),
-        "verified":      v3 is not None and v4 is not None,
+        "severity":      criterion["severity"],
+        "recorded_at":   entry["recorded_at"],
+        "delta_seconds": delta,
+        "stage1_avg":    avg1,
+        "stage2_avg":    avg2,
+        "persistent":    True,
+        "verified":      r4 is not None,
     }
 
-    if v3 is None or v4 is None:
-        alert = {**base_alert, "persistent": False}
-        _buffer_alert(alert)
-        alert_cooldown[metric] = now
-        print(f"[verify/{metric}] sensor unavailable in Stage 2 — logged as inconclusive")
-        return
-
-    avg2 = (v3 + v4) / 2
-    persistent = _near_or_breached(avg2, threshold, condition)
-
-    alert = {**base_alert, "stage2_avg": round(avg2, 2), "persistent": persistent}
-    alert_cooldown[metric] = now
-
-    if persistent:
-        # Send immediately — don't wait for the next drain cycle
-        token = os.getenv("AUTH_TOKEN", "").strip()
-        if not token:
-            print(f"[verify/{metric}] persistent breach confirmed but no token yet — queuing alert")
-        else:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post(
-                        f"{SERVER_URL}/aqc/v1/alert",
-                        headers=_auth_headers(),
-                        json=alert,
-                    )
-                print(
-                    f"[verify/{metric}] Stage 2 avg {avg2:.2f} "
-                    f"{'exceeds' if _breached(avg2, threshold, condition) else 'is near'} "
-                    f"threshold {threshold} — persistent breach confirmed, alert sent"
+    token = os.getenv("AUTH_TOKEN", "").strip()
+    if token:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{SERVER_URL}/aqc/v1/alert",
+                    headers=_auth_headers(),
+                    json=alert,
                 )
-                trigger_drain()  # don't wait for the next scheduled drain
-                return  # sent — no need to queue
-            except (httpx.ConnectError, httpx.HTTPStatusError) as e:
-                print(
-                    f"[verify/{metric}] Immediate alert send failed ({e}) "
-                    f"— queuing for retry at next drain"
-                )
-
+            print(f"[verify/{metric}] alert sent")
+            return
+        except (httpx.ConnectError, httpx.HTTPStatusError) as e:
+            print(f"[verify/{metric}] alert send failed: {e} — queuing")
     else:
-        print(
-            f"[verify/{metric}] Stage 2 avg {avg2:.2f} is below threshold "
-            f"{threshold} — fleeting event, logged for dashboard"
-        )
+        print(f"[verify/{metric}] no token — queuing alert")
 
-    # Persistent alert that failed immediate send, or fleeting event for retrospective dashboard
     _buffer_alert(alert)
 
 
-async def _verify_alert(metric: str, criterion: dict, breach_entry: dict):
-    _verifying.add(metric)
+async def _verify_all(breaching: list[tuple[str, dict]], entry: dict) -> None:
+    """Two-stage verification for all metrics that breached at T.
+
+    One sensor read per timing point, shared across all metrics.
+
+    Severity scoring (integer, 0-7 range):
+      +1  stage 1 launched (always, once any metric breaches)
+      +1  T+10s: any breaching metric still near/above its threshold
+      +1  T+30s: any breaching metric still near/above its threshold
+      +2  T+1m:  any breaching metric still near/above its threshold
+      +2  T+2m:  any breaching metric still near/above its threshold
+
+    Outcomes:
+      severity=1 (fluke)    — patch entry, drop all verification reads
+      severity 2-3 (momentary) — patch entry, add T+1m to buffer
+      severity>=4 (alert)   — patch entry, send per-metric alerts, drop reads
+    """
+    metrics_str = ", ".join(m for m, _ in breaching)
+
+    def any_high(data: dict) -> bool:
+        return any(
+            (v := extract_metric(data, m)) is not None
+            and _near_or_breached(v, float(c["threshold"]), c["condition"])
+            for m, c in breaching
+        )
+
+    sev = 1  # baseline: stage 1 launched
+    r3: dict | None = None
+    r3_at: str = ""
+
     try:
-        await _do_verify(metric, criterion, breach_entry)
+        # ── Stage 1: T+10s ─────────────────────────────────────────────────────
+        await asyncio.sleep(10)
+        r1_at = datetime.now(timezone.utc).isoformat()
+        try:
+            r1 = read_sensor()
+        except RuntimeError as e:
+            print(f"[verify/{metrics_str}] T+10s read failed: {e} — aborting")
+            entry["severity"] = sev
+            return
+        state.set(r1, r1_at)
+        if any_high(r1):
+            sev += 1
+
+        # ── Stage 1: T+30s ─────────────────────────────────────────────────────
+        await asyncio.sleep(20)
+        r2_at = datetime.now(timezone.utc).isoformat()
+        try:
+            r2 = read_sensor()
+        except RuntimeError as e:
+            print(f"[verify/{metrics_str}] T+30s read failed: {e} — aborting")
+            entry["severity"] = sev
+            return
+        state.set(r2, r2_at)
+        if any_high(r2):
+            sev += 1
+
+        if sev == 1:
+            entry["severity"] = sev
+            print(f"[verify/{metrics_str}] stage 1: both reads low — fluke (severity=1)")
+            return
+
+        print(
+            f"[verify/{metrics_str}] stage 1: {sev - 1} high read(s) "
+            f"— advancing to stage 2 (severity so far={sev})"
+        )
+
+        # ── Stage 2: T+1m ──────────────────────────────────────────────────────
+        await asyncio.sleep(30)
+        r3_at = datetime.now(timezone.utc).isoformat()
+        try:
+            r3 = read_sensor()
+        except RuntimeError as e:
+            print(f"[verify/{metrics_str}] T+1m read failed: {e} — inconclusive")
+            entry["severity"] = sev
+            _set_cooldown(breaching)
+            return
+        state.set(r3, r3_at)
+        if any_high(r3):
+            sev += 2
+
+        # ── Stage 2: T+2m ──────────────────────────────────────────────────────
+        await asyncio.sleep(60)
+        r4_at = datetime.now(timezone.utc).isoformat()
+        r4: dict | None = None
+        try:
+            r4 = read_sensor()
+        except RuntimeError as e:
+            print(f"[verify/{metrics_str}] T+2m read failed: {e} — partial stage 2")
+        if r4 is not None:
+            state.set(r4, r4_at)
+            if any_high(r4):
+                sev += 2
+
+        entry["severity"] = sev
+        now_dt = datetime.now(timezone.utc)
+        _set_cooldown(breaching, now_dt)
+
+        if sev >= 4:
+            print(f"[verify/{metrics_str}] stage 2: persistent breach (severity={sev})")
+            for metric, criterion in breaching:
+                await _send_or_queue_alert(metric, criterion, entry, now_dt, r1, r2, r3, r4)
+            trigger_drain()
+        else:
+            print(
+                f"[verify/{metrics_str}] stage 2: both reads low "
+                f"— momentary event (severity={sev})"
+            )
+            _buffer.append({"data": r3, "recorded_at": r3_at})
+
     finally:
-        _verifying.discard(metric)
+        for metric, _ in breaching:
+            _verifying.discard(metric)
 
 
 async def _drain_alerts():
@@ -542,12 +572,13 @@ async def _run_read(settings: dict):
         return
 
     state.set(data, recorded_at)
-    entry = {"data": data, "recorded_at": recorded_at}
+    entry = {"data": data, "recorded_at": recorded_at, "severity": 0}
     _buffer.append(entry)
 
     criteria = load_criteria()
     if criteria:
         now = datetime.now(timezone.utc)
+        breaching: list[tuple[str, dict]] = []
         for criterion in criteria:
             metric    = criterion["metric"]
             threshold = float(criterion["threshold"])
@@ -565,11 +596,13 @@ async def _run_read(settings: dict):
             if last_alert and (now - last_alert) < timedelta(hours=ALERT_COOLDOWN_HRS):
                 continue
 
-            print(
-                f"[breach] {metric} = {value} ({condition} threshold {threshold}) "
-                f"— starting verification"
-            )
-            asyncio.create_task(_verify_alert(metric, criterion, entry))
+            print(f"[breach] {metric} = {value} ({condition} threshold {threshold})")
+            breaching.append((metric, criterion))
+
+        if breaching:
+            for metric, _ in breaching:
+                _verifying.add(metric)
+            asyncio.create_task(_verify_all(breaching, entry))
 
     # Trigger drain on standard reads — not during alert verification.
     if not _verifying and _should_drain(settings):
@@ -627,7 +660,12 @@ async def _run_drain(settings: dict):
     sqlite_ids  = [r["id"] for r in sqlite_rows]
 
     payload = [
-        {"recorded_at": item["recorded_at"], "data": item["data"], "is_aggregated": False}
+        {
+            "recorded_at":   item["recorded_at"],
+            "data":          item["data"],
+            "is_aggregated": False,
+            "severity":      item.get("severity", 0),
+        }
         for item in _buffer
     ] + [
         {

@@ -1,8 +1,8 @@
 """tests/jobs/test_ingest.py
 
 Unit tests for jobs.ingest: scheduling intervals, breach detection,
-alert buffering, trigger_drain event, drain token guard, and buffer
-correction on transient spikes.
+alert buffering, trigger_drain event, drain token guard, and shared
+verification task with severity scoring.
 
 Run laptop-safe tests only:
     pytest -m "not hardware"
@@ -24,7 +24,7 @@ from jobs.ingest import (
     _breached,
     _near_or_breached,
     _buffer_alert,
-    _do_verify,
+    _verify_all,
     _run_drain,
     _run_read,
     _should_drain,
@@ -253,51 +253,93 @@ async def test_run_drain_flushes_to_sqlite_when_full_and_no_token(tmp_db, monkey
     assert queue.count_pending() == 5
 
 
-# ── Buffer correction on transient spike ──────────────────────────────────────
+# ── Shared verification task (_verify_all) ────────────────────────────────────
 
-async def test_do_verify_patches_nested_data_on_transient_spike():
-    """Stage 1 avg well below threshold: breach value is replaced in nested data."""
-    criterion = {
-        "metric": "co2",
-        "threshold": 1000.0,
-        "condition": "above",
-        "severity": "warning",
-    }
-    breach_entry = {
-        "data": {"sen6x": {"co2": 1500, "temp": 25.0}},
+_CO2_CRITERION = {
+    "metric": "co2", "threshold": 1000.0, "condition": "above", "severity": "warning",
+}
+_TEMP_CRITERION = {
+    "metric": "temp", "threshold": 30.0, "condition": "above", "severity": "warning",
+}
+
+def _breach_entry(co2=1500, temp=32.0):
+    return {
+        "data": {"sen6x": {"co2": co2, "temp": temp}},
         "recorded_at": "2026-06-23T10:00:00+00:00",
+        "severity": 0,
     }
 
-    # Both Stage 1 reads return 400 → avg = 400, below 900 (near-zone edge) → transient
+def _low_read():
+    return {"sen6x": {"co2": 400.0, "temp": 20.0}}
+
+def _high_read():
+    return {"sen6x": {"co2": 1200.0, "temp": 35.0}}
+
+
+async def test_verify_all_fluke_sets_severity_1():
+    """Both stage-1 reads low → fluke, severity=1, no stage-2, verifying cleared."""
+    entry = _breach_entry()
+    ingest._verifying.update(["co2", "temp"])
+
     with patch("asyncio.sleep", new_callable=AsyncMock), \
-         patch("jobs.ingest._take_verify_read", new=AsyncMock(return_value=400.0)):
-        await _do_verify("co2", criterion, breach_entry)
+         patch("jobs.ingest.read_sensor", side_effect=[_low_read(), _low_read()]), \
+         patch("jobs.ingest.state"):
+        await _verify_all([("co2", _CO2_CRITERION), ("temp", _TEMP_CRITERION)], entry)
 
-    corrected = breach_entry["data"]
-    assert "sen6x" in corrected, "nested structure must be preserved"
-    assert corrected["sen6x"]["co2"] == pytest.approx(400.0, abs=0.01)
-    assert corrected["sen6x"]["temp"] == 25.0, "unrelated fields must be preserved"
-    assert "co2" not in corrected, "metric must not be flattened to top level"
+    assert entry["severity"] == 1
+    assert not ingest._verifying, "_verifying must be cleared on completion"
 
 
-def test_buffer_correction_preserves_nested_shape():
-    """Correction logic rebuilds the nested dict without flattening."""
-    data   = {"sen6x": {"co2": 1500, "temp": 25.0}, "ts": "2026-06-23"}
-    avg    = 399.1234
-    metric = "co2"
+async def test_verify_all_momentary_severity_and_r3_buffered():
+    """Stage 1 both high, stage 2 both low → momentary, T+1m added to buffer."""
+    entry = _breach_entry()
+    ingest._verifying.update(["co2"])
 
-    for sensor_name, sensor_data in data.items():
-        if isinstance(sensor_data, dict) and metric in sensor_data:
-            data = {
-                **data,
-                sensor_name: {**sensor_data, metric: round(avg, 4)},
-            }
-            break
+    reads = [_high_read(), _high_read(), _low_read(), _low_read()]
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch("jobs.ingest.read_sensor", side_effect=reads), \
+         patch("jobs.ingest.state"):
+        await _verify_all([("co2", _CO2_CRITERION)], entry)
 
-    assert data["sen6x"]["co2"] == round(avg, 4)
-    assert data["sen6x"]["temp"] == 25.0
-    assert data["ts"] == "2026-06-23"
-    assert "co2" not in data
+    # severity = 1 (baseline) + 1 (r1 high) + 1 (r2 high) = 3
+    assert entry["severity"] == 3
+    assert len(ingest._buffer) == 1, "T+1m read must be added to buffer for momentary event"
+    assert ingest._buffer[0]["data"] == _low_read()
+
+
+async def test_verify_all_alert_sends_and_triggers_drain():
+    """Stage 1 both high, stage 2 one high → severity>=4, alert sent, drain triggered."""
+    entry = _breach_entry()
+    ingest._verifying.update(["co2"])
+
+    reads = [_high_read(), _high_read(), _high_read(), _low_read()]
+    drain_calls = []
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch("jobs.ingest.read_sensor", side_effect=reads), \
+         patch("jobs.ingest.state"), \
+         patch("jobs.ingest.trigger_drain", side_effect=lambda: drain_calls.append(1)), \
+         patch("jobs.ingest._send_or_queue_alert", new_callable=AsyncMock) as mock_send, \
+         patch.dict("os.environ", {"AUTH_TOKEN": "tok"}):
+        await _verify_all([("co2", _CO2_CRITERION)], entry)
+
+    # severity = 1 + 1 + 1 + 2 = 5
+    assert entry["severity"] == 5
+    assert mock_send.call_count == 1
+    assert drain_calls, "trigger_drain must be called after persistent breach"
+    assert not ingest._buffer, "no verification reads should be in buffer for alert outcome"
+
+
+async def test_verify_all_clears_verifying_on_sensor_error():
+    """Even when a sensor read fails mid-task, _verifying must be cleared."""
+    entry = _breach_entry()
+    ingest._verifying.add("co2")
+
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch("jobs.ingest.read_sensor", side_effect=RuntimeError("sensor off")), \
+         patch("jobs.ingest.state"):
+        await _verify_all([("co2", _CO2_CRITERION)], entry)
+
+    assert not ingest._verifying
 
 
 # ── Read-triggered drain ───────────────────────────────────────────────────────

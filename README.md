@@ -56,10 +56,9 @@ schoolair.service        Main telemetry process (see below). Starts after the
 
 - **Ingest loop** — reads the sensor on a clock-aligned schedule (5 min during
   the active window, 15 min outside it), buffers readings in RAM, and drains
-  them to the server in batches. Checks each reading against alert criteria and
-  runs a two-stage verification routine (T+10 s / T+30 s → T+1 m / T+2 m) when
-  a threshold is breached. Alerts are only sent after the verification confirms
-  the breach is persistent, not a spike.
+  them to the server in batches. When a reading breaches a threshold it launches
+  a shared two-stage verification task (see below) to distinguish spikes from
+  real events before sending an alert.
 
 - **Microdot server** — lightweight local web server (port 8080). Serves the
   real-time dashboard at `/` and pushes live sensor state over WebSocket at
@@ -73,6 +72,53 @@ reconnect the next drain sends both the SQLite backlog and the current RAM
 buffer in a single batch. On clean shutdown (`systemctl stop`, `sudo reboot`)
 both in-memory buffers (measurements and alerts) are flushed to SQLite before
 exit.
+
+### Alert verification
+
+When a reading breaches a threshold the ingest loop launches a single background
+task that covers **all** metrics that breached in that same read. A shared sensor
+read is taken once per timing point, with each metric evaluated against that
+single reading — if both CO2 and temperature are high at the same time, the four
+verification reads are taken once total, not once per metric.
+
+**Timing:**
+
+```
+T        Original breach reading (already in buffer)
+T+10s    Stage 1 read 1
+T+30s    Stage 1 read 2       ← stage 1 complete
+T+1m     Stage 2 read 1
+T+2m     Stage 2 read 2       ← stage 2 complete (~2 min total)
+```
+
+**Severity scoring (integer 0–7):**
+
+The `severity` field on the original reading at T encodes how many timing points
+confirmed the breach. It is set to 0 on every reading and updated when the
+verification task completes.
+
+| Points | Condition |
+|--------|-----------|
+| +1 | Stage 1 task launched (always — baseline for any breach event) |
+| +1 | T+10s: any breaching metric still near/above its threshold |
+| +1 | T+30s: any breaching metric still near/above its threshold |
+| +2 | T+1m: any breaching metric still near/above its threshold |
+| +2 | T+2m: any breaching metric still near/above its threshold |
+
+Maximum is 7 (all timing points confirmed). `severity >= 4` means at least one
+stage-2 read confirmed the breach — an alert is sent immediately per metric.
+
+**Outcomes and what reaches the server:**
+
+| Severity | Interpretation | Readings sent |
+|----------|----------------|---------------|
+| 0 | No breach | Original reading |
+| 1 | Fluke — stage 1 fired, both reads clear | Original reading with severity=1; verification reads dropped |
+| 2–3 | Momentary — stage 1 confirmed, stage 2 clear | Original reading with severity; T+1m reading added to buffer to show recovery; other verification reads dropped |
+| ≥4 | Persistent — stage 2 confirmed | Original reading with severity; per-metric alerts sent; all verification reads dropped |
+
+The original reading is never modified beyond having its `severity` field set.
+The raw sensor values at T are always preserved exactly as measured.
 
 ### Drain timing
 
@@ -174,7 +220,7 @@ See `.env.example` for the full list. Key ones:
 
 ## Testing
 
-103 tests. All pass on a laptop except one hardware test that requires a real
+110 tests. All pass on a laptop except one hardware test that requires a real
 SEN6x sensor connected via I2C on a Pi.
 
 ```bash
@@ -215,7 +261,8 @@ schoolair-pi/
 │
 ├── jobs/
 │   ├── aggregate.py           Hourly folding of old readings to reduce DB size
-│   └── ingest.py              Read loop, drain loop, alert verification
+│   └── ingest.py              Read loop, drain loop, shared alert verification,
+│                              severity scoring
 │
 ├── registration_wizard/
 │   ├── launcher.sh            Decides whether to start the wizard
