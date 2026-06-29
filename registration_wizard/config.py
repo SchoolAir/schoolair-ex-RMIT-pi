@@ -2,7 +2,7 @@
 # Edit this file before deploying to each unit.
 
 # New server registration endpoint (regular flow)
-HEARTBEAT_URL = "http://54.252.165.86:3000/aqc/v1/register"
+HEARTBEAT_URL = "https://schoolair.duckdns.org/aqc/v1/register"
 HEARTBEAT_TIMEOUT = 15  # seconds
 
 # Local storage

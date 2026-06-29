@@ -1074,12 +1074,11 @@ async def run_connect(ssid: str, password: str) -> None:
         else:
             _set("heartbeat", "On the school network. Sending registration…")
             payload = {
-                "token":         sess["token"],
-                "site":          sess["site"],
-                "asset_name":    sess["asset"],
-                "environment":   sess["environment"],
-                "ssid":          ssid,
-                "registered_at": datetime.now(timezone.utc).isoformat(),
+                "token":       sess["token"],
+                "mac_address": _get_mac_address(),
+                "cpu_serial":  _get_cpu_serial(),
+                "nickname":    sess["asset"],
+                "new_asset":   {"nickname": sess["asset"], "type": sess["environment"]},
             }
             success, hb_msg = await _post_heartbeat(payload)
 
@@ -1263,8 +1262,7 @@ async def do_register(request):
             "mac_address": _get_mac_address(),
             "cpu_serial":  _get_cpu_serial(),
             "nickname":    asset,
-            "site":        site,
-            "environment": environment,
+            "new_asset":   {"nickname": asset, "type": environment},
         }
         success, msg = await _post_heartbeat(payload)
 
@@ -1313,9 +1311,6 @@ async def configure_wifi(request):
     asset   = data.get("asset_name", "").strip()
     environment = data.get("environment", "indoor").strip()
 
-    username    = data.get("username", "").strip()
-    password    = data.get("password", "")
-
     if not (token and site and asset):
         return _json_response({"error": "Token, Site, and Asset are required."}, 400)
 
@@ -1336,9 +1331,6 @@ async def configure_wifi(request):
             "mac_address": _get_mac_address(),
             "cpu_serial":  _get_cpu_serial(),
             "nickname":    asset,
-            "username":    username,
-            "password":    password,
-            "asset_id":    None,
             "new_asset":   {"nickname": asset, "type": environment},
         }
         success, msg = await _post_heartbeat(payload)
@@ -1363,8 +1355,6 @@ async def configure_wifi(request):
     wifi_session["site"]          = site
     wifi_session["asset"]         = asset
     wifi_session["environment"]   = environment
-    wifi_session["username"]      = username
-    wifi_session["password"]      = password
     wifi_session["pre_verified"]  = pre_verified
     wifi_session["legacy_resp"]   = legacy_resp
 
