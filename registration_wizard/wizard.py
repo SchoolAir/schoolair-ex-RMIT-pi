@@ -1168,18 +1168,17 @@ def _has_token() -> bool:
 
 
 async def _idle_watchdog() -> None:
-    """Auto-shutdown after IDLE_TIMEOUT seconds of inactivity — re-registration only.
+    """Auto-shutdown after IDLE_TIMEOUT seconds of inactivity.
 
     In AP mode the wizard shuts itself down after a successful registration.
-    On LAN, we only apply the idle timeout if the device is already registered
-    (re-registration flow). For a first-time unregistered device the wizard must
-    stay alive indefinitely until the user completes registration.
+    On LAN (re-registration or first boot on an already-networked Pi), the idle
+    timeout applies unconditionally — 15 minutes of no browser activity is
+    plenty for any registration flow, and prevents the wizard sitting idle for
+    days on an already-registered device.
     """
     await asyncio.sleep(5)  # brief settle after process start
     if await _ap_is_active():
         return  # AP mode: wizard self-shuts after successful registration
-    if not _has_token():
-        return  # First registration: stay alive until user registers
     while True:
         await asyncio.sleep(60)
         if time.time() - _last_activity > IDLE_TIMEOUT:
@@ -1260,14 +1259,12 @@ async def do_register(request):
         success, msg, legacy_resp = await _post_legacy_registration(token, asset)
     else:
         payload = {
-            "token":         token,
-            "site":          site,
-            "asset_name":    asset,
-            "nickname":      asset,
-            "environment":   environment,
-            "cpu_serial":    _get_cpu_serial(),
-            "mac_address":   _get_mac_address(),
-            "registered_at": datetime.now(timezone.utc).isoformat(),
+            "token":       token,
+            "mac_address": _get_mac_address(),
+            "cpu_serial":  _get_cpu_serial(),
+            "nickname":    asset,
+            "site":        site,
+            "environment": environment,
         }
         success, msg = await _post_heartbeat(payload)
 
@@ -1316,6 +1313,9 @@ async def configure_wifi(request):
     asset   = data.get("asset_name", "").strip()
     environment = data.get("environment", "indoor").strip()
 
+    username    = data.get("username", "").strip()
+    password    = data.get("password", "")
+
     if not (token and site and asset):
         return _json_response({"error": "Token, Site, and Asset are required."}, 400)
 
@@ -1332,14 +1332,14 @@ async def configure_wifi(request):
             pre_verified = True
     else:
         payload = {
-            "token":         token,
-            "site":          site,
-            "asset_name":    asset,
-            "nickname":      asset,
-            "environment":   environment,
-            "cpu_serial":    _get_cpu_serial(),
-            "mac_address":   _get_mac_address(),
-            "registered_at": datetime.now(timezone.utc).isoformat(),
+            "token":       token,
+            "mac_address": _get_mac_address(),
+            "cpu_serial":  _get_cpu_serial(),
+            "nickname":    asset,
+            "username":    username,
+            "password":    password,
+            "asset_id":    None,
+            "new_asset":   {"nickname": asset, "type": environment},
         }
         success, msg = await _post_heartbeat(payload)
         if not success:
@@ -1349,7 +1349,11 @@ async def configure_wifi(request):
         else:
             pre_verified = True
             existing = read_wizard_registration()
-            write_status({**payload, "ssid": existing.get("ssid", "")})
+            write_status({
+                "token": token, "site": site, "asset_name": asset,
+                "environment": environment, "ssid": existing.get("ssid", ""),
+                "registered_at": datetime.now(timezone.utc).isoformat(),
+            })
 
     # Activate session — generate per-client token and redirect to /wifi?s=<token>
     session_token = secrets.token_urlsafe(16)
@@ -1359,6 +1363,8 @@ async def configure_wifi(request):
     wifi_session["site"]          = site
     wifi_session["asset"]         = asset
     wifi_session["environment"]   = environment
+    wifi_session["username"]      = username
+    wifi_session["password"]      = password
     wifi_session["pre_verified"]  = pre_verified
     wifi_session["legacy_resp"]   = legacy_resp
 
