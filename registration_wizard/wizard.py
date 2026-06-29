@@ -1078,7 +1078,7 @@ async def run_connect(ssid: str, password: str) -> None:
                 "mac_address": _get_mac_address(),
                 "cpu_serial":  _get_cpu_serial(),
                 "nickname":    sess["asset"],
-                "new_asset":   {"nickname": sess["asset"], "type": sess["environment"]},
+                "new_asset":   {"nickname": sess["asset"], "type": sess["environment"], "site_name": sess["site"] or None},
             }
             success, hb_msg = await _post_heartbeat(payload)
 
@@ -1262,7 +1262,7 @@ async def do_register(request):
             "mac_address": _get_mac_address(),
             "cpu_serial":  _get_cpu_serial(),
             "nickname":    asset,
-            "new_asset":   {"nickname": asset, "type": environment},
+            "new_asset":   {"nickname": asset, "type": environment, "site_name": site or None},
         }
         success, msg = await _post_heartbeat(payload)
 
@@ -1331,7 +1331,7 @@ async def configure_wifi(request):
             "mac_address": _get_mac_address(),
             "cpu_serial":  _get_cpu_serial(),
             "nickname":    asset,
-            "new_asset":   {"nickname": asset, "type": environment},
+            "new_asset":   {"nickname": asset, "type": environment, "site_name": site or None},
         }
         success, msg = await _post_heartbeat(payload)
         if not success:
