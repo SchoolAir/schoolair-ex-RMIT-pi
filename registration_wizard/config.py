@@ -1,8 +1,8 @@
 # SchoolAir Gatekeeper – deployment configuration
 # Edit this file before deploying to each unit.
 
-# AWS heartbeat endpoint
-HEARTBEAT_URL = "https://data.schoolair.org/aqc/register"
+# New server registration endpoint (regular flow)
+HEARTBEAT_URL = "http://54.252.165.86:3000/aqc/v1/register"
 HEARTBEAT_TIMEOUT = 15  # seconds
 
 # Local storage

@@ -32,7 +32,7 @@ from config import (
     STATUS_FILE,
 )
 
-LEGACY_URL    = "https://data.schoolair.org/node/aqc/register"
+LEGACY_URL    = "https://data.schoolair.org/node/aqc/register"  # old server — LEGACY path only
 TEMP_PROFILE  = "school-air-temp"
 SAVED_PREFIX  = "schoolair-"
 IDLE_TIMEOUT  = 15 * 60  # seconds before the wizard auto-shuts down when idle
@@ -975,12 +975,17 @@ async def _post_legacy_registration(org_token: str, nickname: str) -> tuple:
 
 
 async def _post_heartbeat(payload: dict) -> tuple:
+    token = payload.pop("token", "")
     body = json.dumps(payload).encode()
 
     def _do() -> tuple:
         req = urllib.request.Request(
             HEARTBEAT_URL, data=body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=HEARTBEAT_TIMEOUT) as r:
