@@ -27,7 +27,7 @@ curl -sSL ... | sudo ADMIN_USER=pi bash
 
 ### Service topology
 
-Five systemd services run in sequence on every boot:
+Six systemd services run on every Pi:
 
 ```
 sen6x.service            One-shot — runs `sen6x_read --init` at boot. Starts
@@ -38,16 +38,24 @@ sen6x.service            One-shot — runs `sen6x_read --init` at boot. Starts
 schoolair-first-boot     One-shot — assigns a unique hostname to cloned images
   .service               (schoolair-YYMDD-XXXX). No-op if already set.
 
-schoolair-launcher       One-shot — checks whether AUTH_TOKEN is present in
-  .service               .env. If missing → starts the wizard. If present →
-                         exits so schoolair.service can run.
+schoolair-launcher       One-shot — waits up to 60 s for a client WiFi
+  .service               connection. Connected + AUTH_TOKEN → exits (normal
+                         operation). Connected, no token → starts wizard.
+                         No connection → brings up AP hotspot + starts wizard.
 
 schoolair-wizard         Browser-based registration + Wi-Fi setup (Microdot,
-  .service               port 80). Started on demand by the launcher. Stops
-                         itself after a successful registration.
+  .service               port 80). Started on demand. Stops itself after a
+                         successful registration; idle-timeout stops it on LAN.
 
 schoolair.service        Main telemetry process (see below). Starts after the
                          launcher exits. Restarts automatically on failure.
+
+schoolair-netwatch       Persistent — monitors WiFi after boot. On uplink loss
+  .service               for 2 min, brings up the AP hotspot and wizard. While
+                         in AP mode with saved networks, probes for those
+                         networks every 5 min (briefly closing the AP during
+                         each probe). Closes AP and restarts telemetry on
+                         reconnect.
 ```
 
 ### Telemetry process
@@ -141,6 +149,49 @@ through:
 
 After registration the wizard writes `AUTH_TOKEN` to `.env`, restarts
 `schoolair.service`, and exits. nginx activates to proxy port 80 → port 8080.
+
+---
+
+## WiFi loss recovery
+
+The `schoolair-netwatch` service handles network loss **after boot** without
+requiring a reboot.
+
+```
+uplink lost
+    │
+    ▼ (2-minute grace period — ignores brief blips)
+    │
+    ▼
+AP + wizard started
+    │
+    ├── user connects to SchoolAir_AP and reconfigures WiFi via wizard
+    │       └── uplink restored → AP closed → telemetry restarted
+    │
+    └── no manual action taken
+            │
+            ▼ (every 5 minutes, if saved networks exist AND no client on AP)
+            briefly close AP → try each saved network profile → reopen AP if failed
+            │
+            └── saved network available → AP closed → telemetry restarted
+```
+
+**Grace period (2 min):** Brief WiFi blips — DHCP renewal, AP restart — don't
+trigger the fallback.
+
+**Reconnect probe:** While the AP is up, the watchdog checks every 5 minutes
+whether any of the Pi's saved WiFi profiles are now reachable. The AP drops for
+about 10 seconds during each probe. If a client is currently connected to the
+AP hotspot, that probe cycle is skipped so as not to interrupt an active wizard
+session.
+
+**Timing overrides** (useful when testing):
+
+| Env var              | Default | Meaning |
+|----------------------|---------|---------|
+| `NETWATCH_POLL`      | `30` s  | Connectivity check interval |
+| `NETWATCH_GRACE`     | `120` s | Uplink-loss grace period before AP mode |
+| `NETWATCH_RECONNECT` | `300` s | Interval between reconnect probes in AP mode |
 
 ---
 
@@ -249,8 +300,10 @@ schoolair-pi/
 │   ├── sen6x.service          SEN6x one-shot initialisation service
 │   ├── schoolair-first-boot   One-shot hostname assignment
 │   │   .service
-│   ├── schoolair-launcher     Network check → start wizard or proceed
+│   ├── schoolair-launcher     Boot-time network check → start wizard or proceed
 │   │   .service
+│   ├── schoolair-netwatch     Persistent WiFi watchdog — AP fallback + reconnect
+│   │   .service               probes (see "WiFi loss recovery")
 │   ├── schoolair-wizard       Browser registration + Wi-Fi setup
 │   │   .service
 │   ├── schoolair.service      Main telemetry service
@@ -265,7 +318,8 @@ schoolair-pi/
 │                              severity scoring
 │
 ├── registration_wizard/
-│   ├── launcher.sh            Decides whether to start the wizard
+│   ├── launcher.sh            Boot-time decision: start wizard or not
+│   ├── netwatch.sh            Persistent WiFi watchdog daemon
 │   └── wizard.py              Microdot browser portal (registration + Wi-Fi)
 │
 ├── scripts/

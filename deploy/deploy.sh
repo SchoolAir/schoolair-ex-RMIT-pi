@@ -56,10 +56,13 @@ ok "sen6x binaries built and installed to $DAEMON_DST"
 
 # ── 5. Install systemd service files ─────────────────────────────────────────
 log "Installing service files…"
-sudo cp "$SCHOOLAIR_DIR/deploy/sen6x.service"              "$SYSTEMD_DIR/sen6x.service"
-sudo cp "$SCHOOLAIR_DIR/deploy/schoolair.service"          "$SYSTEMD_DIR/schoolair.service"
-sudo cp "$SCHOOLAIR_DIR/deploy/schoolair-wizard.service"   "$SYSTEMD_DIR/schoolair-wizard.service"
-sudo cp "$SCHOOLAIR_DIR/deploy/schoolair-launcher.service" "$SYSTEMD_DIR/schoolair-launcher.service"
+sudo cp "$SCHOOLAIR_DIR/deploy/sen6x.service"                "$SYSTEMD_DIR/sen6x.service"
+sudo cp "$SCHOOLAIR_DIR/deploy/schoolair.service"            "$SYSTEMD_DIR/schoolair.service"
+sudo cp "$SCHOOLAIR_DIR/deploy/schoolair-wizard.service"     "$SYSTEMD_DIR/schoolair-wizard.service"
+sudo cp "$SCHOOLAIR_DIR/deploy/schoolair-launcher.service"   "$SYSTEMD_DIR/schoolair-launcher.service"
+sudo cp "$SCHOOLAIR_DIR/deploy/schoolair-netwatch.service"   "$SYSTEMD_DIR/schoolair-netwatch.service"
+chmod +x "$SCHOOLAIR_DIR/registration_wizard/launcher.sh"
+chmod +x "$SCHOOLAIR_DIR/registration_wizard/netwatch.sh"
 ok "Service files installed"
 
 # ── 6. Add sudoers rule (allows telemetry service to start wizard) ────────────
@@ -88,7 +91,8 @@ ok "Old services stopped"
 sudo systemctl enable sen6x.service
 sudo systemctl enable schoolair.service
 sudo systemctl enable schoolair-launcher.service
-# schoolair-wizard.service is NOT enabled — the launcher starts it on demand.
+sudo systemctl enable schoolair-netwatch.service
+# schoolair-wizard.service is NOT enabled — the launcher / netwatch start it on demand.
 ok "Services enabled"
 
 # ── 10. Run sen6x initialisation (schoolair.service depends on it) ───────────
