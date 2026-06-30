@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# schoolair-update — OTA update entry point for deployed SchoolAir Pi gateways.
+#
+# Installed to /usr/local/bin/schoolair-update (root-owned) by schoolair_setup.sh.
+# Listed in /etc/sudoers.d/schoolair-wizard so the telemetry service can invoke it
+# as root without a password.
+#
+# This file is intentionally minimal — its content almost never changes.
+# All real update logic lives in schoolair_setup.sh, which is fetched fresh from
+# the repo on every run so it always reflects the current branch.
+#
+# Invoked automatically by the telemetry service when the server signals that a
+# newer firmware version is available.  Also safe to run manually:
+#
+#   sudo schoolair-update
+#
+set -euo pipefail
+
+REPO_RAW="https://raw.githubusercontent.com/SchoolAir/schoolair-ex-RMIT-pi/main/schoolair_setup.sh"
+
+echo "━━━ SchoolAir OTA update: $(date) ━━━"
+echo "Fetching setup script from ${REPO_RAW} …"
+
+_TMP=$(mktemp /tmp/schoolair-setup-XXXXXX.sh)
+trap 'rm -f "$_TMP"' EXIT
+
+curl -fsSL "$REPO_RAW" -o "$_TMP" \
+    || { echo "FATAL: could not fetch setup script — check connectivity."; exit 1; }
+
+chmod +x "$_TMP"
+exec bash "$_TMP" --update

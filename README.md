@@ -21,6 +21,41 @@ To use a different admin username:
 curl -sSL ... | sudo ADMIN_USER=pi bash
 ```
 
+### OTA updates — already-deployed Pis
+
+Once a Pi is registered and in the field, the server can push an update without
+physical access. Set `SCHOOLAIR_MIN_VERSION` on the server to the new target
+version — every Pi will self-update within its next drain cycle (≤ 30 min during
+school hours, ≤ 2 h outside them).
+
+**What happens on the Pi:**
+
+1. The drain loop receives `"update_available": true` in the ingest response.
+2. It calls `sudo /usr/local/bin/schoolair-update` (pre-approved via sudoers).
+3. The wrapper downloads the current `schoolair_setup.sh` from GitHub and runs
+   it with `--update`, skipping host-config steps (hostname, apt, I2C, networking).
+4. Updated code is deployed, pip deps installed, C binary recompiled if changed,
+   and `sen6x.service` + `schoolair.service` are restarted.
+5. `.env` and all hardware configuration are left untouched.
+
+**To trigger a fleet update:**
+
+```bash
+# 1. Bump VERSION in jobs/ingest.py (e.g. "2.1.0")
+# 2. Merge to the main branch
+# 3. Set on the server and restart:
+SCHOOLAIR_MIN_VERSION=2.1.0
+```
+
+**To update a single Pi manually:**
+
+```bash
+sudo schoolair-update
+```
+
+The DB column `devices.firmware_version` is updated on every ingest so you can
+query which Pi is running which version.
+
 ---
 
 ## How it works
@@ -340,7 +375,8 @@ schoolair-pi/
 ├── setup.py                   Registration gate (check_registration) and
 │                              recovery CLI (python -m setup)
 ├── read-sensor.sh             Invokes sen6x_read; sensor.py captures its stdout
-├── schoolair_setup.sh         One-command fresh-Pi installer
+├── schoolair_setup.sh         Unified installer + OTA updater (pass --update for field upgrades)
+├── schoolair-update           Thin OTA wrapper → /usr/local/bin/ (root-owned, sudoers-approved)
 ├── state.py                   Shared in-memory sensor state for the dashboard
 ├── pyproject.toml             Project + pytest config
 └── requirements.txt           Python dependencies

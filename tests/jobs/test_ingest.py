@@ -9,6 +9,7 @@ Run laptop-safe tests only:
 """
 
 import asyncio
+import re
 from datetime import time, datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -29,8 +30,10 @@ from jobs.ingest import (
     _run_read,
     _should_drain,
     trigger_drain,
+    _auth_headers,
     ALERT_NEAR_PCT,
     ALERT_BUFFER_CAPACITY,
+    VERSION,
     READ_ACTIVE_SECONDS  as READ_ACTIVE,
     READ_IDLE_SECONDS    as READ_IDLE,
     DRAIN_ACTIVE_SECONDS as DRAIN_ACTIVE,
@@ -492,3 +495,20 @@ async def test_run_drain_does_not_discard_reading_added_during_post(tmp_db, monk
     assert ingest._buffer == [concurrent_entry], (
         "the reading added during POST must survive — only the pre-POST entries are cleared"
     )
+
+# ── OTA update / version ───────────────────────────────────────────────────────
+
+def test_version_is_semver():
+    assert re.fullmatch(r"\d+\.\d+\.\d+", VERSION), \
+        f"VERSION must be major.minor.patch, got {VERSION!r}"
+
+def test_auth_headers_include_version():
+    with patch.dict("os.environ", {"AUTH_TOKEN": "testtoken"}):
+        headers = _auth_headers()
+    assert "X-Schoolair-Version" in headers
+    assert headers["X-Schoolair-Version"] == VERSION
+
+def test_auth_headers_include_bearer():
+    with patch.dict("os.environ", {"AUTH_TOKEN": "tok123"}):
+        headers = _auth_headers()
+    assert headers["Authorization"] == "Bearer tok123"

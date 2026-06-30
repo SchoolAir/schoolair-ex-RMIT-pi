@@ -31,6 +31,8 @@ import state
 
 load_dotenv()
 
+VERSION            = "2.0.0"
+
 SERVER_URL         = os.getenv("SERVER_URL", "").rstrip("/")
 INGEST_URL         = os.getenv("INGEST_URL", f"{SERVER_URL}/aqc/v1/ingest")
 
@@ -63,6 +65,7 @@ BATCH_SIZE       = 500
 # In-memory buffer: readings not yet sent to the server.
 # Each entry: {"data": dict, "recorded_at": str}
 _buffer: list[dict] = []
+_update_in_progress = False
 
 alert_cooldown:       dict[str, datetime] = {}
 _verifying:           set[str]            = set()   # metrics currently in a verify routine
@@ -507,6 +510,7 @@ def _auth_headers() -> dict:
     return {
         "Authorization": f"Bearer {os.getenv('AUTH_TOKEN', '').strip()}",
         "Content-Type": "application/json",
+        "X-Schoolair-Version": VERSION,
     }
 
 
@@ -543,6 +547,44 @@ async def _mirror_batch(measurements: list[dict]) -> None:
             print(f"[mirror] {res.json().get('count', len(measurements))} measurement(s) sent")
     except Exception as e:
         print(f"[mirror] new server unreachable: {e}")
+
+
+# --------------------------- OTA update ---------------------------
+
+
+async def _trigger_update():
+    """Invoke the OTA update script as root via the pre-approved sudoers rule.
+
+    The update script re-fetches schoolair_setup.sh from GitHub and runs it
+    with --update, which re-deploys code, recompiles the C binary if needed,
+    and restarts schoolair.service — killing this process.  systemd brings it
+    back up immediately with the new code.  This function therefore may not
+    return; that's expected and safe.
+    """
+    global _update_in_progress
+    if _update_in_progress:
+        print("[OTA] Update already in progress — skipping duplicate trigger")
+        return
+    _update_in_progress = True
+    print(f"[OTA] Server signalled update available (running v{VERSION}) — starting update")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "/usr/local/bin/schoolair-update",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        output = stdout.decode(errors="replace") if stdout else ""
+        if proc.returncode == 0:
+            print("[OTA] Update finished successfully")
+        else:
+            print(f"[OTA] Update exited with code {proc.returncode}")
+            if output:
+                print(output[-2000:])
+    except Exception as e:
+        print(f"[OTA] Update failed: {e}")
+    finally:
+        _update_in_progress = False
 
 
 # --------------------------- Read step ---------------------------
@@ -702,6 +744,9 @@ async def _run_drain(settings: dict):
         print(f"  Sent {response.get('count', len(payload))} measurement(s)")
 
         await _mirror_batch(payload)
+
+        if response.get("update_available"):
+            asyncio.create_task(_trigger_update())
 
         # Flush alert buffer now that we know we have connectivity
         await _drain_alerts()

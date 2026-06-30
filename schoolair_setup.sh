@@ -35,6 +35,14 @@
 
 set -euo pipefail
 
+# ── Mode ───────────────────────────────────────────────────────────────────────
+# Pass "--update" as the first argument to run only the code-update steps,
+# skipping host-config steps (hostname, apt, I2C, networking) that never change
+# after initial setup.  The default (no argument) runs the full first-time setup.
+MODE="${1:-setup}"
+[[ "$MODE" == "setup" || "$MODE" == "--update" ]] \
+    || { echo "Usage: $0 [--update]"; exit 1; }
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_HOME="/home/${ADMIN_USER}"
@@ -87,29 +95,37 @@ chmod +x "$_SET_HN_TMP"
 ok "set_hostname.sh fetched from GitHub"
 
 # ── 1. Hostname ────────────────────────────────────────────────────────────────
-step "1 / Hostname"
-CURRENT_HN=$(hostname)
-if [[ "$CURRENT_HN" == schoolair-[0-9]* ]]; then
-    ok "Hostname already set: ${CURRENT_HN}  (not regenerated)"
-    _HN_FILE=$(cat /etc/hostname 2>/dev/null | tr -d '[:space:]')
-    if [ "$_HN_FILE" != "$CURRENT_HN" ]; then
-        bash "$_SET_HN_TMP" "$CURRENT_HN" > /dev/null
-        ok "Hostname locations synced to ${CURRENT_HN}"
+if [[ "$MODE" == "setup" ]]; then
+    step "1 / Hostname"
+    CURRENT_HN=$(hostname)
+    if [[ "$CURRENT_HN" == schoolair-[0-9]* ]]; then
+        ok "Hostname already set: ${CURRENT_HN}  (not regenerated)"
+        _HN_FILE=$(cat /etc/hostname 2>/dev/null | tr -d '[:space:]')
+        if [ "$_HN_FILE" != "$CURRENT_HN" ]; then
+            bash "$_SET_HN_TMP" "$CURRENT_HN" > /dev/null
+            ok "Hostname locations synced to ${CURRENT_HN}"
+        fi
+    else
+        NEW_HN=$(bash "$_SET_HN_TMP")
+        ok "Hostname set to ${NEW_HN}"
     fi
 else
-    NEW_HN=$(bash "$_SET_HN_TMP")
-    ok "Hostname set to ${NEW_HN}"
+    skip "1 / Hostname  (update mode — hostname already set)"
 fi
 
 # ── 2. System packages ─────────────────────────────────────────────────────────
-step "2 / System packages"
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    git python3-pip i2c-tools nginx avahi-daemon gcc make
-ok "git python3-pip i2c-tools nginx avahi-daemon gcc make"
+if [[ "$MODE" == "setup" ]]; then
+    step "2 / System packages"
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        git python3-pip i2c-tools nginx avahi-daemon gcc make
+    ok "git python3-pip i2c-tools nginx avahi-daemon gcc make"
 
-systemctl disable nginx 2>/dev/null || true
-systemctl stop    nginx 2>/dev/null || true
+    systemctl disable nginx 2>/dev/null || true
+    systemctl stop    nginx 2>/dev/null || true
+else
+    skip "2 / System packages  (update mode — already installed)"
+fi
 
 # ── 3. Clone / update SchoolAir app ───────────────────────────────────────────
 step "3 / Clone SchoolAir app  →  ${SCHOOLAIR_DIR}"
@@ -155,6 +171,15 @@ done
 ln -sf "${ADMIN_HOME}/version_check.py" /usr/local/bin/schoolair
 ok "schoolair command  →  /usr/local/bin/schoolair"
 
+if [ -f "${SCHOOLAIR_DIR}/schoolair-update" ]; then
+    cp "${SCHOOLAIR_DIR}/schoolair-update" /usr/local/bin/schoolair-update
+    chmod 755 /usr/local/bin/schoolair-update
+    chown root:root /usr/local/bin/schoolair-update
+    ok "schoolair-update  →  /usr/local/bin/  (OTA entry point, root-owned)"
+else
+    warn "schoolair-update not found in app dir — OTA updates unavailable"
+fi
+
 # ── 6. Registration wizard TLS certificate ────────────────────────────────────
 step "6 / Registration wizard TLS certificate"
 if [ ! -f "${WIZARD_DIR}/cert.pem" ] || [ ! -f "${WIZARD_DIR}/key.pem" ]; then
@@ -189,6 +214,8 @@ else
         warn "sen6x make failed — check gcc output above (non-fatal)"
     fi
 fi
+
+if [[ "$MODE" == "setup" ]]; then
 
 # ── 8. I2C + baudrate ────────────────────────────────────────────────────────
 step "8 / I2C enable + baudrate"
@@ -258,6 +285,10 @@ if [ -f /etc/dhcpcd.conf ]; then
     fi
 fi
 
+else
+    skip "8–12 / I2C + networking config  (update mode — unchanged since setup)"
+fi
+
 # ── 13. nginx ─────────────────────────────────────────────────────────────────
 step "13 / nginx  (configured, disabled until registration)"
 # nginx proxies port 80 → telemetry :8080 once the device is registered.
@@ -282,14 +313,16 @@ systemctl stop    nginx 2>/dev/null || true
 ok "nginx config written  (proxies to :${TELEMETRY_PORT}, service disabled)"
 
 # ── 14. Sudoers rule ──────────────────────────────────────────────────────────
-step "14 / Sudoers rule for telemetry → wizard"
+step "14 / Sudoers rule for telemetry → wizard / OTA update"
 SUDOERS_FILE="/etc/sudoers.d/schoolair-wizard"
 cat > "$SUDOERS_FILE" << EOF
 # Allow the telemetry server (runs as ${ADMIN_USER}) to start the wizard service
 ${ADMIN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start schoolair-wizard
+# Allow the telemetry server to trigger an OTA update (fixed, root-owned script)
+${ADMIN_USER} ALL=(ALL) NOPASSWD: /usr/local/bin/schoolair-update
 EOF
 chmod 440 "$SUDOERS_FILE"
-ok "sudoers: ${ADMIN_USER} may start schoolair-wizard without password"
+ok "sudoers: ${ADMIN_USER} may start schoolair-wizard / run schoolair-update without password"
 
 # ── 15. systemd services ──────────────────────────────────────────────────────
 step "15 / systemd services"
@@ -316,6 +349,14 @@ systemctl enable sen6x.service
 systemctl enable schoolair-first-boot.service 2>/dev/null || true
 ok "Services enabled"
 
+if [[ "$MODE" == "--update" ]]; then
+    step "15b / Restart updated services"
+    if systemctl is-active --quiet nginx; then systemctl restart nginx; fi
+    systemctl restart sen6x.service     || warn "sen6x.service restart failed"
+    systemctl restart schoolair.service || warn "schoolair.service restart failed"
+    ok "Services restarted with updated code"
+fi
+
 # ── 16. Verification ───────────────────────────────────────────────────────────
 step "16 / Verification"
 ERRORS=0
@@ -332,6 +373,7 @@ chk "launcher.sh executable"              test -x "${WIZARD_DIR}/launcher.sh"
 chk "main.py present"                      test -f "${SCHOOLAIR_DIR}/main.py"
 chk "first_boot.sh executable"            test -x "${ADMIN_HOME}/first_boot.sh"
 chk "schoolair command available"         test -L /usr/local/bin/schoolair
+chk "schoolair-update installed"          test -x /usr/local/bin/schoolair-update
 chk "NM hotspot '${AP_CONN}'"             nmcli con show "$AP_CONN"
 chk "Captive-portal DNS config"           test -f /etc/NetworkManager/dnsmasq-shared.d/schoolair-captive.conf
 chk "Avahi service file"                  test -f /etc/avahi/services/schoolair.service
@@ -340,31 +382,41 @@ chk "schoolair.service enabled"           systemctl is-enabled schoolair.service
 chk "sen6x.service enabled"              systemctl is-enabled sen6x.service
 chk "schoolair-first-boot enabled"        systemctl is-enabled schoolair-first-boot.service
 chk "nginx proxies to ${TELEMETRY_PORT}"  grep -q "${TELEMETRY_PORT}" /etc/nginx/sites-available/default
-chk "nginx disabled (correct pre-reg)"   bash -c "! systemctl is-enabled nginx >/dev/null 2>&1"
+if [[ "$MODE" == "setup" ]]; then
+    chk "nginx disabled (correct pre-reg)"   bash -c "! systemctl is-enabled nginx >/dev/null 2>&1"
+fi
 chk "sudoers rule present"               test -f /etc/sudoers.d/schoolair-wizard
 
 # ── Summary ────────────────────────────────────────────────────────────────────
+_LABEL="Setup"; [[ "$MODE" == "--update" ]] && _LABEL="Update"
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 if [ "$ERRORS" -eq 0 ]; then
-    echo -e "  ${GREEN}${BOLD}Setup complete — all checks passed.${NC}"
+    echo -e "  ${GREEN}${BOLD}${_LABEL} complete — all checks passed.${NC}"
 else
-    echo -e "  ${YELLOW}${BOLD}Setup complete with ${ERRORS} warning(s) — see above.${NC}"
+    echo -e "  ${YELLOW}${BOLD}${_LABEL} complete with ${ERRORS} warning(s) — see above.${NC}"
 fi
 echo
 echo "  This device hostname:  $(hostname)"
 echo
-echo "  After rebooting:"
-echo "  1. Join Wi-Fi:  SchoolAir_Setup  (open, no password)"
-echo "  2. Open:        http://${AP_IP}"
-echo "  3. Complete the registration form."
-echo "  4. On success the hotspot closes; nginx activates on port 80"
-echo "     and proxies to the telemetry server on :${TELEMETRY_PORT}."
-echo
+
+if [[ "$MODE" == "setup" ]]; then
+    echo "  After rebooting:"
+    echo "  1. Join Wi-Fi:  SchoolAir_Setup  (open, no password)"
+    echo "  2. Open:        http://${AP_IP}"
+    echo "  3. Complete the registration form."
+    echo "  4. On success the hotspot closes; nginx activates on port 80"
+    echo "     and proxies to the telemetry server on :${TELEMETRY_PORT}."
+    echo
+fi
+
 echo "  Logs:"
 echo "    journalctl -u schoolair-launcher -u schoolair-wizard -u schoolair -f"
 echo
-echo "  Developer notes (re-run only):"
-echo -e "  ${YELLOW}➜${NC}  sen6x binaries were replaced."
-echo "     Re-run initialisation without rebooting:  sudo systemctl restart sen6x"
+
+if [[ "$MODE" == "setup" ]]; then
+    echo "  Developer notes (re-run only):"
+    echo -e "  ${YELLOW}➜${NC}  sen6x binaries were replaced."
+    echo "     Re-run initialisation without rebooting:  sudo systemctl restart sen6x"
+fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
