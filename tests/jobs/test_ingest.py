@@ -31,6 +31,7 @@ from jobs.ingest import (
     _should_drain,
     trigger_drain,
     _auth_headers,
+    _trigger_update,
     ALERT_NEAR_PCT,
     ALERT_BUFFER_CAPACITY,
     VERSION,
@@ -512,3 +513,97 @@ def test_auth_headers_include_bearer():
     with patch.dict("os.environ", {"AUTH_TOKEN": "tok123"}):
         headers = _auth_headers()
     assert headers["Authorization"] == "Bearer tok123"
+
+
+async def test_trigger_update_guard_skips_subprocess_when_already_running():
+    """Second call while an update is in flight must not spawn a second process."""
+    ingest._update_in_progress = True
+    try:
+        mock_exec = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", mock_exec):
+            await _trigger_update()
+        mock_exec.assert_not_called()
+    finally:
+        ingest._update_in_progress = False
+
+
+async def test_trigger_update_resets_flag_after_success():
+    """`_update_in_progress` must be False after a successful subprocess run."""
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate.return_value = (b"ok", b"")
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        await _trigger_update()
+    assert ingest._update_in_progress is False
+
+
+async def test_trigger_update_resets_flag_after_subprocess_failure():
+    """`_update_in_progress` must be False even when the update script exits non-zero.
+
+    A stuck True would silently suppress all future OTA signals until the
+    process is restarted.
+    """
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate.return_value = (b"fatal error", b"")
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        await _trigger_update()
+    assert ingest._update_in_progress is False
+
+
+async def test_run_drain_fires_trigger_update_when_update_available(tmp_db, monkeypatch):
+    """`_run_drain` must schedule `_trigger_update` when the server flags update_available."""
+    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    ingest._buffer.append({"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"})
+
+    async def fake_post(client, measurements):
+        return {"update_available": True}
+
+    trigger_mock = AsyncMock()
+    with patch("jobs.ingest.aggregate.run_aggregation",
+               return_value={"buckets": 0, "rows_in": 0, "rows_removed": 0}), \
+         patch("jobs.ingest._post_batch", new=fake_post), \
+         patch("jobs.ingest._drain_alerts"), \
+         patch("jobs.ingest._trigger_update", trigger_mock):
+        await _run_drain(S)
+
+    trigger_mock.assert_called_once()
+
+
+async def test_run_drain_skips_trigger_update_when_flag_false(tmp_db, monkeypatch):
+    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    ingest._buffer.append({"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"})
+
+    async def fake_post(client, measurements):
+        return {"update_available": False}
+
+    trigger_mock = AsyncMock()
+    with patch("jobs.ingest.aggregate.run_aggregation",
+               return_value={"buckets": 0, "rows_in": 0, "rows_removed": 0}), \
+         patch("jobs.ingest._post_batch", new=fake_post), \
+         patch("jobs.ingest._drain_alerts"), \
+         patch("jobs.ingest._trigger_update", trigger_mock):
+        await _run_drain(S)
+
+    trigger_mock.assert_not_called()
+
+
+async def test_run_drain_skips_trigger_update_when_key_absent(tmp_db, monkeypatch):
+    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    ingest._buffer.append({"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"})
+
+    async def fake_post(client, measurements):
+        return {}
+
+    trigger_mock = AsyncMock()
+    with patch("jobs.ingest.aggregate.run_aggregation",
+               return_value={"buckets": 0, "rows_in": 0, "rows_removed": 0}), \
+         patch("jobs.ingest._post_batch", new=fake_post), \
+         patch("jobs.ingest._drain_alerts"), \
+         patch("jobs.ingest._trigger_update", trigger_mock):
+        await _run_drain(S)
+
+    trigger_mock.assert_not_called()
