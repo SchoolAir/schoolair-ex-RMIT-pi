@@ -85,18 +85,17 @@ command -v nmcli   >/dev/null 2>&1 || die "nmcli not found — is NetworkManager
 command -v python3 >/dev/null 2>&1 || die "python3 not found."
 ok "Root, user='${ADMIN_USER}', home='${ADMIN_HOME}'"
 
-# Fetch set_hostname.sh before the repo clone — needed at step 1.
-_RAW_BASE="$(echo "$REPO_URL" | sed 's|github\.com|raw.githubusercontent.com|; s|\.git$||')"
-_SET_HN_TMP="/tmp/schoolair-set_hostname.sh"
-curl -fsSL "${_RAW_BASE}/${REPO_BRANCH}/set_hostname.sh" \
-    -o "$_SET_HN_TMP" \
-    || die "Cannot fetch set_hostname.sh from GitHub — check connectivity."
-chmod +x "$_SET_HN_TMP"
-ok "set_hostname.sh fetched from GitHub"
-
 # ── 1. Hostname ────────────────────────────────────────────────────────────────
 if [[ "$MODE" == "setup" ]]; then
     step "1 / Hostname"
+    # Fetch set_hostname.sh just before it's needed — skip in update mode.
+    _RAW_BASE="$(echo "$REPO_URL" | sed 's|github\.com|raw.githubusercontent.com|; s|\.git$||')"
+    _SET_HN_TMP="/tmp/schoolair-set_hostname.sh"
+    curl -fsSL "${_RAW_BASE}/${REPO_BRANCH}/set_hostname.sh" \
+        -o "$_SET_HN_TMP" \
+        || die "Cannot fetch set_hostname.sh from GitHub — check connectivity."
+    chmod +x "$_SET_HN_TMP"
+    ok "set_hostname.sh fetched from GitHub"
     CURRENT_HN=$(hostname)
     if [[ "$CURRENT_HN" == schoolair-[0-9]* ]]; then
         ok "Hostname already set: ${CURRENT_HN}  (not regenerated)"
