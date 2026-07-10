@@ -201,6 +201,21 @@ input:disabled{background:#f3f4f6;color:#374151;cursor:default}
 .btn-secondary{background:#f3f4f6;color:#374151;border:1.5px solid #d1d5db}
 .btn-secondary:hover:not(:disabled){background:#e5e7eb}
 .btn-secondary:disabled{opacity:.5;cursor:not-allowed}
+.migrate-row{display:flex;align-items:center;gap:.6rem;margin:.75rem 0 .25rem}
+.migrate-row input[type=checkbox]{width:1.1rem;height:1.1rem;accent-color:#1a56db;
+  flex-shrink:0;cursor:pointer}
+.migrate-lbl{font-size:.9rem;color:#374151;cursor:pointer;
+  display:flex;align-items:center;gap:.4rem}
+.tip{position:relative;display:inline-flex;align-items:center;
+  justify-content:center;width:1.1rem;height:1.1rem;border-radius:50%;
+  background:#d1d5db;color:#374151;font-size:.7rem;font-weight:700;
+  cursor:help;flex-shrink:0}
+.tip-body{display:none;position:absolute;left:1.4rem;top:50%;
+  transform:translateY(-50%);background:#1f2937;color:#f9fafb;
+  font-size:.78rem;line-height:1.5;font-weight:400;padding:.6rem .75rem;
+  border-radius:8px;width:220px;z-index:10;pointer-events:none;
+  box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.tip:hover .tip-body,.tip:focus .tip-body{display:block}
 </style>
 </head>
 <body>
@@ -230,6 +245,19 @@ input:disabled{background:#f3f4f6;color:#374151;cursor:default}
              placeholder="e.g. Room 302" oninput="update()">
       <button type="button" id="asset-lock-btn" class="lock-btn"
               onclick="toggleLock('asset')" style="display:none" title="Edit / Lock">✏️</button>
+    </div>
+
+    <div class="migrate-row">
+      <input type="checkbox" id="migrate" name="migrate">
+      <label for="migrate" class="migrate-lbl">
+        New monitoring location
+        <span class="tip" tabindex="0" aria-label="What does this mean?">?
+          <span class="tip-body">Check this when you are moving the sensor to a
+            different physical location and want to keep the old location's
+            historical data separate. Leave unchecked to simply rename the
+            current monitoring point.</span>
+        </span>
+      </label>
     </div>
 
     <div id="env-section">
@@ -320,10 +348,11 @@ function showNotice(msg, type) {
 }
 
 async function doRegister() {
-  const token = tokenEl().value.trim();
-  const site  = siteEl().value.trim();
-  const asset = assetEl().value.trim();
-  const env   = document.querySelector('input[name="environment"]:checked')?.value || 'indoor';
+  const token   = tokenEl().value.trim();
+  const site    = siteEl().value.trim();
+  const asset   = assetEl().value.trim();
+  const env     = document.querySelector('input[name="environment"]:checked')?.value || 'indoor';
+  const migrate = document.getElementById('migrate').checked;
   regBtn.disabled = true;
   const orig = regBtn.textContent;
   regBtn.textContent = 'Registering…';
@@ -331,7 +360,7 @@ async function doRegister() {
     const r = await fetch('/register', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({token, site, asset_name: asset, environment: env}),
+      body: JSON.stringify({token, site, asset_name: asset, environment: env, migrate}),
     });
     const d = await r.json();
     if (d.ok) showNotice('Device registered successfully.', 'ok');
@@ -350,7 +379,8 @@ async function doConfigWifi() {
   if (!site)  missing.push('Site');
   if (!asset) missing.push('Asset');
   if (missing.length) { showNotice(missing.join(' and ') + ' cannot be empty.', 'err'); return; }
-  const env = document.querySelector('input[name="environment"]:checked')?.value || 'indoor';
+  const env     = document.querySelector('input[name="environment"]:checked')?.value || 'indoor';
+  const migrate = document.getElementById('migrate').checked;
   document.getElementById('quote-notice').innerHTML = '<em>The WiFi Wizard will reveal itself once authentication is complete…</em>';
   wifiBtn.disabled = true;
   wifiBtn.textContent = 'Verifying…';
@@ -358,7 +388,7 @@ async function doConfigWifi() {
     const r = await fetch('/configure-wifi', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({token, site, asset_name: asset, environment: env}),
+      body: JSON.stringify({token, site, asset_name: asset, environment: env, migrate}),
     });
     const d = await r.json();
     if (d.redirect) { window.location.href = d.redirect; return; }
@@ -1078,6 +1108,7 @@ async def run_connect(ssid: str, password: str) -> None:
                 "mac_address": _get_mac_address(),
                 "cpu_serial":  _get_cpu_serial(),
                 "nickname":    sess["asset"],
+                "migrate":     sess.get("migrate", False),
                 "new_asset":   {"nickname": sess["asset"], "type": sess["environment"], "site_name": sess["site"] or None},
             }
             success, hb_msg = await _post_heartbeat(payload)
@@ -1244,11 +1275,12 @@ async def index(request):
 @app.route("/register", methods=["POST"])
 async def do_register(request):
     """Register Device button — cloud registration only, no WiFi change."""
-    data     = request.json or {}
-    token    = data.get("token", "").strip()
-    site     = data.get("site", "").strip()
-    asset    = data.get("asset_name", "").strip()
+    data        = request.json or {}
+    token       = data.get("token", "").strip()
+    site        = data.get("site", "").strip()
+    asset       = data.get("asset_name", "").strip()
     environment = data.get("environment", "indoor").strip()
+    migrate     = bool(data.get("migrate", False))
 
     if not (token and site and asset):
         return _json_response({"error": "Token, Site, and Asset are required."}, 400)
@@ -1262,6 +1294,7 @@ async def do_register(request):
             "mac_address": _get_mac_address(),
             "cpu_serial":  _get_cpu_serial(),
             "nickname":    asset,
+            "migrate":     migrate,
             "new_asset":   {"nickname": asset, "type": environment, "site_name": site or None},
         }
         success, msg = await _post_heartbeat(payload)
@@ -1305,11 +1338,12 @@ async def do_register(request):
 @app.route("/configure-wifi", methods=["POST"])
 async def configure_wifi(request):
     """Configure WiFi button — verify/register, set session, redirect to /wifi."""
-    data    = request.json or {}
-    token   = data.get("token", "").strip()
-    site    = data.get("site", "").strip()
-    asset   = data.get("asset_name", "").strip()
+    data        = request.json or {}
+    token       = data.get("token", "").strip()
+    site        = data.get("site", "").strip()
+    asset       = data.get("asset_name", "").strip()
     environment = data.get("environment", "indoor").strip()
+    migrate     = bool(data.get("migrate", False))
 
     if not (token and site and asset):
         return _json_response({"error": "Token, Site, and Asset are required."}, 400)
@@ -1331,6 +1365,7 @@ async def configure_wifi(request):
             "mac_address": _get_mac_address(),
             "cpu_serial":  _get_cpu_serial(),
             "nickname":    asset,
+            "migrate":     migrate,
             "new_asset":   {"nickname": asset, "type": environment, "site_name": site or None},
         }
         success, msg = await _post_heartbeat(payload)
@@ -1355,6 +1390,7 @@ async def configure_wifi(request):
     wifi_session["site"]          = site
     wifi_session["asset"]         = asset
     wifi_session["environment"]   = environment
+    wifi_session["migrate"]       = migrate
     wifi_session["pre_verified"]  = pre_verified
     wifi_session["legacy_resp"]   = legacy_resp
 
