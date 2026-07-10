@@ -20,6 +20,7 @@ SQLite backlog and the current in-memory buffer together.
 import asyncio
 import json
 import os
+import random
 from datetime import datetime, timezone, timedelta, time
 from pathlib import Path
 import httpx
@@ -51,6 +52,7 @@ READ_ACTIVE_SECONDS  = int(os.getenv("READ_INTERVAL_ACTIVE",  300))   # 5 min
 READ_IDLE_SECONDS    = int(os.getenv("READ_INTERVAL_IDLE",    900))   # 15 min
 DRAIN_ACTIVE_SECONDS = int(os.getenv("DRAIN_INTERVAL_ACTIVE", 1800))  # 30 min
 DRAIN_IDLE_SECONDS   = int(os.getenv("DRAIN_INTERVAL_IDLE",   7200))  # 2 h
+DRAIN_JITTER_MAX     = int(os.getenv("DRAIN_JITTER_MAX",       120))  # 2 min spread
 
 CRITERIA_PATH = Path("config/criteria.json")
 SETTINGS_PATH = Path("config/settings.json")
@@ -117,12 +119,30 @@ def _in_active_window(settings: dict, now: time | None = None) -> bool:
 def load_settings() -> dict:
     if not SETTINGS_PATH.exists():
         print("settings.json not found — using defaults")
-        return DEFAULT_SETTINGS
+        return dict(DEFAULT_SETTINGS)
     try:
         return json.loads(SETTINGS_PATH.read_text())
     except json.JSONDecodeError:
         print("settings.json is malformed — using defaults")
-        return DEFAULT_SETTINGS
+        return dict(DEFAULT_SETTINGS)
+
+
+def _ensure_drain_jitter(settings: dict) -> int:
+    """Return the persisted drain jitter offset for this device.
+
+    If `drain_jitter_seconds` is already in settings, that value is used
+    unchanged — making it easy to migrate to server-assigned slots later by
+    simply writing the value into settings.json.  If absent, a random offset
+    in [0, DRAIN_JITTER_MAX] is generated, saved to settings.json, and returned.
+    """
+    if "drain_jitter_seconds" in settings:
+        return int(settings["drain_jitter_seconds"])
+    jitter = random.randint(0, DRAIN_JITTER_MAX)
+    settings["drain_jitter_seconds"] = jitter
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
+    print(f"[drain] jitter slot assigned: {jitter}s — saved to {SETTINGS_PATH}")
+    return jitter
 
 
 _VALID_BOUNDARY_MINUTES = {0, 15, 30, 45}
@@ -811,8 +831,11 @@ async def _drain_loop(settings: dict):
     global _drain_trigger
     _drain_trigger = asyncio.Event()
 
+    jitter = _ensure_drain_jitter(settings)
+
     # Brief settle so the read loop collects at least one reading, and to clear
-    # any SQLite backlog left from a previous outage.
+    # any SQLite backlog left from a previous outage.  No jitter here — devices
+    # haven't converged to the same grid yet so there's no herd to scatter.
     await asyncio.sleep(15)
     await _run_drain(settings)
 
@@ -827,6 +850,9 @@ async def _drain_loop(settings: dict):
             print("[drain] triggered")
         except asyncio.TimeoutError:
             print("[drain] fallback — no reads received, draining anyway")
+        if jitter:
+            print(f"[drain] jitter: {jitter}s")
+            await asyncio.sleep(jitter)
         await _run_drain(settings)
 
 

@@ -9,6 +9,7 @@ Run laptop-safe tests only:
 """
 
 import asyncio
+import json
 import re
 from datetime import time, datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
@@ -32,9 +33,11 @@ from jobs.ingest import (
     trigger_drain,
     _auth_headers,
     _trigger_update,
+    _ensure_drain_jitter,
     ALERT_NEAR_PCT,
     ALERT_BUFFER_CAPACITY,
     VERSION,
+    DRAIN_JITTER_MAX,
     READ_ACTIVE_SECONDS  as READ_ACTIVE,
     READ_IDLE_SECONDS    as READ_IDLE,
     DRAIN_ACTIVE_SECONDS as DRAIN_ACTIVE,
@@ -607,3 +610,44 @@ async def test_run_drain_skips_trigger_update_when_key_absent(tmp_db, monkeypatc
         await _run_drain(S)
 
     trigger_mock.assert_not_called()
+
+
+# ── Drain jitter ───────────────────────────────────────────────────────────────
+
+def test_ensure_drain_jitter_generates_and_saves_when_absent(tmp_path, monkeypatch):
+    """When drain_jitter_seconds is missing, a value is generated and persisted."""
+    settings_file = tmp_path / "config" / "settings.json"
+    monkeypatch.setattr(ingest, "SETTINGS_PATH", settings_file)
+
+    settings = {"active_window": {"start": "07:00", "end": "16:00"}}
+    jitter = _ensure_drain_jitter(settings)
+
+    assert 0 <= jitter <= DRAIN_JITTER_MAX
+    assert settings["drain_jitter_seconds"] == jitter
+    saved = json.loads(settings_file.read_text())
+    assert saved["drain_jitter_seconds"] == jitter
+
+
+def test_ensure_drain_jitter_is_stable_across_calls(tmp_path, monkeypatch):
+    """The same value is returned on repeated calls — no re-randomisation."""
+    settings_file = tmp_path / "config" / "settings.json"
+    monkeypatch.setattr(ingest, "SETTINGS_PATH", settings_file)
+
+    settings = {"active_window": {"start": "07:00", "end": "16:00"}}
+    first  = _ensure_drain_jitter(settings)
+    second = _ensure_drain_jitter(settings)
+    assert first == second
+
+
+def test_ensure_drain_jitter_honours_existing_value(tmp_path, monkeypatch):
+    """When drain_jitter_seconds is already present, it is used as-is and the
+    file is not rewritten (server-assigned slots must never be overwritten)."""
+    settings_file = tmp_path / "config" / "settings.json"
+    monkeypatch.setattr(ingest, "SETTINGS_PATH", settings_file)
+
+    settings = {"active_window": {"start": "07:00", "end": "16:00"},
+                "drain_jitter_seconds": 42}
+    jitter = _ensure_drain_jitter(settings)
+
+    assert jitter == 42
+    assert not settings_file.exists(), "file must not be written when value already present"
