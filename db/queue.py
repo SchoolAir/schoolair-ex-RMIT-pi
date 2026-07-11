@@ -1,6 +1,9 @@
 """db/queue.py
 
-Manages the local SQLite queue for measurements that failed to send.
+Manages two local SQLite queues:
+  measurements_queue — readings that failed to send during a server outage.
+  alerts_queue       — confirmed alerts waiting to be POSTed to the server.
+
 On startup, resets any rows stuck in 'sending' back to 'pending' for retry.
 """
 
@@ -41,9 +44,23 @@ def init():
             ON measurements_queue (status, recorded_at)
         """)
         
-        # Reset rows stuck in 'sending' on last run back to 'pending'
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS alerts_queue (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                data         TEXT NOT NULL,
+                triggered_at TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending'
+            )
+        """)
+
+        # Reset rows stuck mid-send on last run back to 'pending'
         con.execute("""
             UPDATE measurements_queue
+            SET status = 'pending'
+            WHERE status = 'sending'
+        """)
+        con.execute("""
+            UPDATE alerts_queue
             SET status = 'pending'
             WHERE status = 'sending'
         """)
@@ -148,4 +165,43 @@ def remove_many(ids: list[int]):
         con.executemany(
             "DELETE FROM measurements_queue WHERE id = ?",
             [(id,) for id in ids]
+        )
+
+
+# ── Alert queue ─────────────────────────────────────────────────────────────
+
+
+def enqueue_alert(data: dict, triggered_at: str):
+    """Persist a confirmed alert for sending at next drain."""
+    with _connect() as con:
+        con.execute(
+            "INSERT INTO alerts_queue (data, triggered_at) VALUES (?, ?)",
+            (json.dumps(data), triggered_at)
+        )
+
+
+def get_pending_alerts() -> list[sqlite3.Row]:
+    with _connect() as con:
+        return con.execute(
+            "SELECT * FROM alerts_queue WHERE status = 'pending' ORDER BY id ASC"
+        ).fetchall()
+
+
+def set_alert_status_many(ids: list[int], status: str):
+    if not ids:
+        return
+    with _connect() as con:
+        con.executemany(
+            "UPDATE alerts_queue SET status = ? WHERE id = ?",
+            [(status, i) for i in ids]
+        )
+
+
+def remove_alerts(ids: list[int]):
+    if not ids:
+        return
+    with _connect() as con:
+        con.executemany(
+            "DELETE FROM alerts_queue WHERE id = ?",
+            [(i,) for i in ids]
         )

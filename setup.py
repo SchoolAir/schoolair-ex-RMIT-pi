@@ -36,11 +36,32 @@ def print_banner():
 
 
 def get_mac_address() -> str:
-    """Return first non-loopback MAC address."""
-    mac = uuid.getnode()
-    if (mac >> 40) % 2:  # multicast bit set = not a real MAC
-        raise RuntimeError("Unable to determine a real MAC address")
-    return ":".join(f"{(mac >> (i * 8)) & 0xFF:02x}" for i in range(5, -1, -1))
+    """Return MAC address of eth0, wlan0, or the first available interface."""
+    for iface in ("eth0", "wlan0"):
+        try:
+            return Path(f"/sys/class/net/{iface}/address").read_text().strip()
+        except OSError:
+            pass
+    # Fall back to any non-loopback interface
+    for iface_path in Path("/sys/class/net").iterdir():
+        if iface_path.name == "lo":
+            continue
+        try:
+            return (iface_path / "address").read_text().strip()
+        except OSError:
+            pass
+    raise RuntimeError("Unable to determine a real MAC address")
+
+
+def get_cpu_serial() -> str:
+    """Return the Pi's CPU serial from /proc/cpuinfo, or 'unknown'."""
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("Serial"):
+                return line.split(":")[1].strip()
+    except OSError:
+        pass
+    return "unknown"
 
 
 def write_env_token(token: str):
@@ -115,11 +136,12 @@ def run_registration():
             headers=auth_headers,
             json={
                 "mac_address": mac_address,
-                "nickname": device_name,
-                "username": username,
-                "password": password,
-                "asset_id": asset_id,
-                "new_asset": new_asset,
+                "cpu_serial":  get_cpu_serial(),
+                "nickname":    device_name,
+                "username":    username,
+                "password":    password,
+                "asset_id":    asset_id,
+                "new_asset":   new_asset,
             },
         )
 
@@ -138,23 +160,21 @@ def run_registration():
 def check_registration() -> bool:
     """Non-interactive startup gate. No prompts (safe under systemd).
 
-    Returns False (caller should exit) if there's no token or the server
-    actively rejects it. Returns True if the token is valid OR the server
-    is merely unreachable — in the unreachable case the ingest loop starts
-    anyway and queues readings locally until the server returns.
+    Returns False only when AUTH_TOKEN is absent — the device cannot send data
+    without a token. Any server-side validation failures (including 404 if the
+    /validate endpoint doesn't exist) are treated as warnings so the ingest loop
+    can start and queue readings locally.
     """
     token = os.getenv("AUTH_TOKEN", "").strip()
     if not token:
-        print("(err) No AUTH_TOKEN - Register with: `python -m setup`")
+        print("(info) No AUTH_TOKEN — readings will buffer locally until registration completes")
         return False
     try:
         if not validate_token(token):
-            print("(err) Token rejected by server — Re-register: `python -m setup`")
-            return False
-        return True
-    except httpx.ConnectError:
-        print("(warn) Server unreachable. Starting anyway - readings will queue locally.")
-        return True
+            print("(warn) Token validation returned non-2xx — starting anyway")
+    except Exception:
+        print("(warn) Could not reach server for token validation — starting anyway")
+    return True
 
 
 # ----------------------- Manual entry point -----------------------

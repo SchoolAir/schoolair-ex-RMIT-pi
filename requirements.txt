@@ -6,12 +6,14 @@ httpx==0.28.1
 idna==3.13
 iniconfig==2.3.0
 microdot==2.6.1
+simple-websocket
 netifaces==0.11.0
 packaging==26.2
 pluggy==1.6.0
 prompt_toolkit==3.0.52
 Pygments==2.20.0
 pytest==9.0.3
+pytest-asyncio
 python-dotenv==1.2.2
 questionary==2.1.1
 typing_extensions==4.15.0

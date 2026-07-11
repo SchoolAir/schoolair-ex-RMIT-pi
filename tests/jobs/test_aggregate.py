@@ -153,6 +153,20 @@ def test_run_aggregation_folds_old_readings_from_same_hour(db):
     assert "raw" not in data
 
 
+def test_mean_data_handles_nested_sensor_format():
+    """Aggregation works on the new nested sensor data format."""
+    readings = [
+        {"sen6x": {"temp": 20.0, "humidity": 40.0, "co2": 400}},
+        {"sen6x": {"temp": 24.0, "humidity": 60.0, "co2": 600}},
+    ]
+    averaged = aggregate._mean_data(readings)
+    assert averaged["temp"] == 22.0
+    assert averaged["humidity"] == 50.0
+    assert averaged["co2"] == 500
+    assert "sen6x" not in averaged    # output is always flat metric keys
+    assert "raw" not in averaged
+
+
 def test_run_aggregation_leaves_recent_readings_alone(db):
     """Rows newer than the retention window should stay raw."""
 
