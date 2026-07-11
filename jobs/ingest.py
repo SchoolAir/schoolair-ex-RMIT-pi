@@ -34,14 +34,16 @@ load_dotenv()
 
 VERSION            = "2.0.0"
 
-SERVER_URL         = os.getenv("SERVER_URL", "").rstrip("/")
-INGEST_URL         = os.getenv("INGEST_URL", f"{SERVER_URL}/aqc/v1/ingest")
+# Primary (authoritative) server — AWS.  Buffer/SQLite retention is decided by
+# whether this server accepts or rejects the drain.
+_PRIMARY_SERVER_URL   = os.getenv("NEW_SERVER_URL", "").rstrip("/")
+_PRIMARY_INGEST_URL   = os.getenv("NEW_INGEST_URL", f"{_PRIMARY_SERVER_URL}/aqc/v1/ingest") if _PRIMARY_SERVER_URL else ""
 
-# Optional secondary server — receives a best-effort mirror of every successful
-# drain.  Failure here never affects the primary drain.  Set both vars to enable.
-_NEW_SERVER_URL    = os.getenv("NEW_SERVER_URL", "").rstrip("/")
-_NEW_INGEST_URL    = os.getenv("NEW_INGEST_URL", f"{_NEW_SERVER_URL}/aqc/v1/ingest") if _NEW_SERVER_URL else ""
-_NEW_AUTH_TOKEN    = os.getenv("NEW_AUTH_TOKEN", "").strip()
+# Secondary (legacy) server — best-effort mirror.  Failures are logged but
+# never affect buffering or retries.
+_SECONDARY_SERVER_URL = os.getenv("SERVER_URL", "").rstrip("/")
+_SECONDARY_INGEST_URL = os.getenv("INGEST_URL", f"{_SECONDARY_SERVER_URL}/aqc/v1/ingest")
+_SECONDARY_AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 ALERT_NEAR_PCT     = float(os.getenv("ALERT_NEAR_PCT", 10))  # within N% of threshold = "near"
 ALERT_COOLDOWN_HRS = float(os.getenv("ALERT_COOLDOWN_HOURS", 1))
 BUFFER_CAPACITY    = int(os.getenv("BUFFER_CAPACITY", 500))
@@ -309,12 +311,12 @@ async def _send_or_queue_alert(
         "verified":      r4 is not None,
     }
 
-    token = os.getenv("AUTH_TOKEN", "").strip()
+    token = os.getenv("NEW_AUTH_TOKEN", "").strip()
     if token:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
-                    f"{SERVER_URL}/aqc/v1/alert",
+                    f"{_PRIMARY_SERVER_URL}/aqc/v1/alert",
                     headers=_auth_headers(),
                     json=alert,
                 )
@@ -461,7 +463,7 @@ async def _drain_alerts():
                     _log_queued_alert(alert)
                     try:
                         await client.post(
-                            f"{SERVER_URL}/aqc/v1/alert",
+                            f"{_PRIMARY_SERVER_URL}/aqc/v1/alert",
                             headers=_auth_headers(),
                             json=alert,
                         )
@@ -502,7 +504,7 @@ async def _drain_alerts():
             _log_queued_alert(alert)
             try:
                 await client.post(
-                    f"{SERVER_URL}/aqc/v1/alert",
+                    f"{_PRIMARY_SERVER_URL}/aqc/v1/alert",
                     headers=_auth_headers(),
                     json=alert,
                 )
@@ -528,7 +530,7 @@ async def _drain_alerts():
 
 def _auth_headers() -> dict:
     return {
-        "Authorization": f"Bearer {os.getenv('AUTH_TOKEN', '').strip()}",
+        "Authorization": f"Bearer {os.getenv('NEW_AUTH_TOKEN', '').strip()}",
         "Content-Type": "application/json",
         "X-Schoolair-Version": VERSION,
     }
@@ -536,7 +538,7 @@ def _auth_headers() -> dict:
 
 async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> dict:
     res = await client.post(
-        INGEST_URL,
+        _PRIMARY_INGEST_URL,
         headers=_auth_headers(),
         json={"measurements": measurements},
     )
@@ -544,29 +546,26 @@ async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> di
         print("Batch ingest failed: auth token rejected.")
         raise httpx.HTTPStatusError("Unauthorised", request=res.request, response=res)
     res.raise_for_status()
-    try:
-        return res.json()
-    except Exception:
-        return {}  # server returned 2xx with empty/non-JSON body (e.g. LEGACY endpoint)
+    return res.json()
 
 
 async def _mirror_batch(measurements: list[dict]) -> None:
-    """Best-effort POST to the secondary server. Never raises."""
-    if not (_NEW_INGEST_URL and _NEW_AUTH_TOKEN):
+    """Best-effort POST to the legacy secondary server. Never raises."""
+    if not _SECONDARY_INGEST_URL:
         return
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.post(
-                _NEW_INGEST_URL,
-                headers={"Authorization": f"Bearer {_NEW_AUTH_TOKEN}", "Content-Type": "application/json"},
+                _SECONDARY_INGEST_URL,
+                headers={"Authorization": f"Bearer {_SECONDARY_AUTH_TOKEN}", "Content-Type": "application/json"},
                 json={"measurements": measurements},
             )
         if not res.is_success:
-            print(f"[mirror] new server returned {res.status_code}")
+            print(f"[mirror] legacy server returned {res.status_code}")
         else:
-            print(f"[mirror] {res.json().get('count', len(measurements))} measurement(s) sent")
+            print(f"[mirror] legacy server received {len(measurements)} measurement(s)")
     except Exception as e:
-        print(f"[mirror] new server unreachable: {e}")
+        print(f"[mirror] legacy server unreachable: {e}")
 
 
 # --------------------------- OTA update ---------------------------
@@ -702,7 +701,7 @@ async def _run_drain(settings: dict):
 
     _last_drained_at = datetime.now(timezone.utc)
 
-    token = os.getenv("AUTH_TOKEN", "").strip()
+    token = os.getenv("NEW_AUTH_TOKEN", "").strip()
     if not token:
         # No token yet — keep buffering; spill to SQLite only when buffer is full
         if len(_buffer) >= BUFFER_CAPACITY:

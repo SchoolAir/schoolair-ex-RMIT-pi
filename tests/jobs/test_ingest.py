@@ -228,7 +228,7 @@ async def test_trigger_drain_sets_event():
 
 async def test_run_drain_holds_buffer_in_memory_when_no_token(tmp_db, monkeypatch):
     """Buffer below capacity stays in memory when AUTH_TOKEN is absent."""
-    monkeypatch.setenv("AUTH_TOKEN", "")
+    monkeypatch.setenv("NEW_AUTH_TOKEN", "")
     ingest._buffer.append({
         "data": {"sen6x": {"co2": 400}},
         "recorded_at": "2026-06-23T10:00:00+00:00",
@@ -243,7 +243,7 @@ async def test_run_drain_holds_buffer_in_memory_when_no_token(tmp_db, monkeypatc
 
 async def test_run_drain_flushes_to_sqlite_when_full_and_no_token(tmp_db, monkeypatch):
     """Buffer at capacity is flushed to SQLite when AUTH_TOKEN is absent."""
-    monkeypatch.setenv("AUTH_TOKEN", "")
+    monkeypatch.setenv("NEW_AUTH_TOKEN", "")
     monkeypatch.setattr(ingest, "BUFFER_CAPACITY", 5)
     entry = {
         "data": {"sen6x": {"co2": 400}},
@@ -326,7 +326,7 @@ async def test_verify_all_alert_sends_and_triggers_drain():
          patch("jobs.ingest.state"), \
          patch("jobs.ingest.trigger_drain", side_effect=lambda: drain_calls.append(1)), \
          patch("jobs.ingest._send_or_queue_alert", new_callable=AsyncMock) as mock_send, \
-         patch.dict("os.environ", {"AUTH_TOKEN": "tok"}):
+         patch.dict("os.environ", {"NEW_AUTH_TOKEN": "tok"}):
         await _verify_all([("co2", _CO2_CRITERION)], entry)
 
     # severity = 1 + 1 + 1 + 2 = 5
@@ -478,7 +478,7 @@ def test_validate_accepts_quarter_hour_boundaries():
 
 async def test_run_drain_does_not_discard_reading_added_during_post(tmp_db, monkeypatch):
     """Reading appended to _buffer during the async POST is preserved after drain."""
-    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    monkeypatch.setenv("NEW_AUTH_TOKEN", "tok")
     ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
 
     initial_entry = {"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"}
@@ -507,13 +507,13 @@ def test_version_is_semver():
         f"VERSION must be major.minor.patch, got {VERSION!r}"
 
 def test_auth_headers_include_version():
-    with patch.dict("os.environ", {"AUTH_TOKEN": "testtoken"}):
+    with patch.dict("os.environ", {"NEW_AUTH_TOKEN": "testtoken"}):
         headers = _auth_headers()
     assert "X-Schoolair-Version" in headers
     assert headers["X-Schoolair-Version"] == VERSION
 
 def test_auth_headers_include_bearer():
-    with patch.dict("os.environ", {"AUTH_TOKEN": "tok123"}):
+    with patch.dict("os.environ", {"NEW_AUTH_TOKEN": "tok123"}):
         headers = _auth_headers()
     assert headers["Authorization"] == "Bearer tok123"
 
@@ -556,7 +556,7 @@ async def test_trigger_update_resets_flag_after_subprocess_failure():
 
 async def test_run_drain_fires_trigger_update_when_update_available(tmp_db, monkeypatch):
     """`_run_drain` must schedule `_trigger_update` when the server flags update_available."""
-    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    monkeypatch.setenv("NEW_AUTH_TOKEN", "tok")
     ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
     ingest._buffer.append({"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"})
 
@@ -575,7 +575,7 @@ async def test_run_drain_fires_trigger_update_when_update_available(tmp_db, monk
 
 
 async def test_run_drain_skips_trigger_update_when_flag_false(tmp_db, monkeypatch):
-    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    monkeypatch.setenv("NEW_AUTH_TOKEN", "tok")
     ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
     ingest._buffer.append({"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"})
 
@@ -594,7 +594,7 @@ async def test_run_drain_skips_trigger_update_when_flag_false(tmp_db, monkeypatc
 
 
 async def test_run_drain_skips_trigger_update_when_key_absent(tmp_db, monkeypatch):
-    monkeypatch.setenv("AUTH_TOKEN", "tok")
+    monkeypatch.setenv("NEW_AUTH_TOKEN", "tok")
     ingest._last_drained_at = datetime.now(timezone.utc) - timedelta(hours=1)
     ingest._buffer.append({"data": {"sen6x": {"co2": 400}}, "recorded_at": "2026-06-23T10:00:00+00:00"})
 
