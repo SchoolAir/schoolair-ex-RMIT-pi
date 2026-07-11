@@ -713,19 +713,35 @@ def _fix_owner(path: str) -> None:
             pass
 
 
-def _write_auth_token(token: str) -> None:
-    """Write AUTH_TOKEN into pi-main's .env so the ingest service can use it."""
+def _write_env_key(key: str, token: str) -> None:
+    """Upsert a single key=value line in pi-main's .env."""
     content = ""
     if os.path.exists(PI_MAIN_ENV_PATH):
         with open(PI_MAIN_ENV_PATH) as f:
             content = f.read()
-    if re.search(r"^AUTH_TOKEN=.*$", content, re.MULTILINE):
-        content = re.sub(r"^AUTH_TOKEN=.*$", f"AUTH_TOKEN={token}", content, flags=re.MULTILINE)
+    pattern = rf"^{re.escape(key)}=.*$"
+    if re.search(pattern, content, re.MULTILINE):
+        content = re.sub(pattern, f"{key}={token}", content, flags=re.MULTILINE)
     else:
-        content += f"\nAUTH_TOKEN={token}\n"
+        content += f"\n{key}={token}\n"
     with open(PI_MAIN_ENV_PATH, "w") as f:
         f.write(content)
     _fix_owner(PI_MAIN_ENV_PATH)
+
+
+def _write_auth_token(token: str) -> None:
+    """Write AUTH_TOKEN (legacy secondary server) into pi-main's .env."""
+    _write_env_key("AUTH_TOKEN", token)
+
+
+def _write_new_auth_token(token: str) -> None:
+    """Write NEW_AUTH_TOKEN (primary AWS server) into pi-main's .env.
+
+    This is the device-specific token issued by the server on registration —
+    not the org provisioning token used to make the request.  The ingest
+    service reads this key to authenticate every drain.
+    """
+    _write_env_key("NEW_AUTH_TOKEN", token)
 
 
 def _ensure_dir() -> None:
@@ -1004,7 +1020,14 @@ async def _post_legacy_registration(org_token: str, nickname: str) -> tuple:
         return False, f"Legacy registration failed: {exc}", {}
 
 
-async def _post_heartbeat(payload: dict) -> tuple:
+async def _post_heartbeat(payload: dict) -> tuple[bool, str, str]:
+    """POST to the primary server's register endpoint.
+
+    Returns (success, message, device_auth_token).  device_auth_token is the
+    token the server issues for this specific device — it must be written to
+    NEW_AUTH_TOKEN in .env so the ingest service can authenticate drains.
+    On failure, device_auth_token is an empty string.
+    """
     token = payload.pop("token", "")
     body = json.dumps(payload).encode()
 
@@ -1023,11 +1046,15 @@ async def _post_heartbeat(payload: dict) -> tuple:
 
     loop = asyncio.get_running_loop()
     try:
-        code, body = await loop.run_in_executor(None, _do)
-        print(f"[heartbeat] HTTP {code}: {body[:200]}")
+        code, resp_body = await loop.run_in_executor(None, _do)
+        print(f"[heartbeat] HTTP {code}: {resp_body[:200]}")
         if code == 200:
-            return True, "Registered successfully"
-        return False, f"Server returned HTTP {code}"
+            try:
+                device_auth_token = json.loads(resp_body).get("auth_token", "")
+            except Exception:
+                device_auth_token = ""
+            return True, "Registered successfully", device_auth_token
+        return False, f"Server returned HTTP {code}", ""
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -1036,12 +1063,12 @@ async def _post_heartbeat(payload: dict) -> tuple:
             pass
         print(f"[heartbeat] HTTP {exc.code}: {body}")
         if exc.code in (401, 403):
-            return False, "Token rejected by SchoolAir Cloud"
-        return False, f"Server error HTTP {exc.code}"
+            return False, "Token rejected by SchoolAir Cloud", ""
+        return False, f"Server error HTTP {exc.code}", ""
     except urllib.error.URLError as exc:
-        return False, f"Could not reach SchoolAir Cloud: {exc.reason}"
+        return False, f"Could not reach SchoolAir Cloud: {exc.reason}", ""
     except Exception as exc:
-        return False, f"Heartbeat failed: {exc}"
+        return False, f"Heartbeat failed: {exc}", ""
 
 
 # ── Registration background task ──────────────────────────────────────────────
@@ -1093,6 +1120,7 @@ async def run_connect(ssid: str, password: str) -> None:
     # 4. Cloud call (only if not pre-verified)
     success = True
     hb_msg = ""
+    device_auth_token = ""
     legacy_resp: dict = wifi_session.get("legacy_resp", {})
 
     if not wifi_session["pre_verified"]:
@@ -1111,7 +1139,7 @@ async def run_connect(ssid: str, password: str) -> None:
                 "migrate":     sess.get("migrate", False),
                 "new_asset":   {"nickname": sess["asset"], "type": sess["environment"], "site_name": sess["site"] or None},
             }
-            success, hb_msg = await _post_heartbeat(payload)
+            success, hb_msg, device_auth_token = await _post_heartbeat(payload)
 
     if success:
         # 5. Commit temp profile → permanent named profile; set incremental priority
@@ -1136,6 +1164,11 @@ async def run_connect(ssid: str, password: str) -> None:
                 _write_auth_token(sess["token"])
             except Exception as e:
                 print(f"[wizard] Warning: could not write AUTH_TOKEN to pi-main .env: {e}")
+            if device_auth_token:
+                try:
+                    _write_new_auth_token(device_auth_token)
+                except Exception as e:
+                    print(f"[wizard] Warning: could not write NEW_AUTH_TOKEN to pi-main .env: {e}")
 
         if sess["site"] == "LEGACY":
             device_token = {
@@ -1297,7 +1330,7 @@ async def do_register(request):
             "migrate":     migrate,
             "new_asset":   {"nickname": asset, "type": environment, "site_name": site or None},
         }
-        success, msg = await _post_heartbeat(payload)
+        success, msg, device_auth_token = await _post_heartbeat(payload)
 
     if not success:
         return _json_response({"error": _friendly_error(msg)})
@@ -1329,6 +1362,11 @@ async def do_register(request):
             _write_auth_token(token)
         except Exception as e:
             print(f"[wizard] Warning: could not write AUTH_TOKEN to pi-main .env: {e}")
+        if device_auth_token:
+            try:
+                _write_new_auth_token(device_auth_token)
+            except Exception as e:
+                print(f"[wizard] Warning: could not write NEW_AUTH_TOKEN to pi-main .env: {e}")
 
     # Restart the telemetry service so it picks up the new token immediately
     asyncio.create_task(_cmd("systemctl restart schoolair"))
@@ -1368,7 +1406,7 @@ async def configure_wifi(request):
             "migrate":     migrate,
             "new_asset":   {"nickname": asset, "type": environment, "site_name": site or None},
         }
-        success, msg = await _post_heartbeat(payload)
+        success, msg, device_auth_token = await _post_heartbeat(payload)
         if not success:
             if "Could not reach" not in msg:
                 return _json_response({"error": _friendly_error(msg)})
@@ -1381,6 +1419,11 @@ async def configure_wifi(request):
                 "environment": environment, "ssid": existing.get("ssid", ""),
                 "registered_at": datetime.now(timezone.utc).isoformat(),
             })
+            if device_auth_token:
+                try:
+                    _write_new_auth_token(device_auth_token)
+                except Exception as e:
+                    print(f"[wizard] Warning: could not write NEW_AUTH_TOKEN to pi-main .env: {e}")
 
     # Activate session — generate per-client token and redirect to /wifi?s=<token>
     session_token = secrets.token_urlsafe(16)
