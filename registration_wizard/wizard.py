@@ -227,9 +227,9 @@ input:disabled{background:#f3f4f6;color:#374151;cursor:default}
   <form id="pg1" onsubmit="return false">
     <div class="sect">Identity</div>
 
-    <label for="token">Registration Token</label>
+    <label for="token" id="token-label">Registration Token</label>
     <input type="text" id="token" name="token" autocomplete="on"
-           placeholder="e.g. SA-2024-XXXXX" oninput="update()">
+           placeholder="8-character code, e.g. aB3xQr7Z" oninput="update()">
 
     <label for="site">Site Name</label>
     <div class="field-row">
@@ -307,6 +307,10 @@ function init() {
   if (INIT.asset) { assetLockBtn.style.display = ''; }
   applyLock('site');
   applyLock('asset');
+  if (INIT.hasDeviceAuth) {
+    document.getElementById('token-label').textContent = 'Registration Token (optional)';
+    tokenEl().placeholder = 'Leave blank to re-register with existing device credentials';
+  }
   update();
 }
 
@@ -333,7 +337,8 @@ function update() {
   const token = tokenEl().value.trim();
   const site  = siteEl().value.trim();
   const asset = assetEl().value.trim();
-  const allFilled   = !!(token && site && asset);
+  const tokenOk      = !!(token || INIT.hasDeviceAuth);
+  const allFilled    = !!(tokenOk && site && asset);
   const siteChanged  = !locked.site  && site  !== INIT.site;
   const assetChanged = !locked.asset && asset !== INIT.asset;
   regBtn.disabled = !(allFilled && (siteChanged || assetChanged));
@@ -375,7 +380,7 @@ async function doConfigWifi() {
   const site  = siteEl().value.trim();
   const asset = assetEl().value.trim();
   const missing = [];
-  if (!token) missing.push('Token');
+  if (!token && !INIT.hasDeviceAuth) missing.push('Token');
   if (!site)  missing.push('Site');
   if (!asset) missing.push('Asset');
   if (missing.length) { showNotice(missing.join(' and ') + ' cannot be empty.', 'err'); return; }
@@ -744,6 +749,24 @@ def _write_new_auth_token(token: str) -> None:
     _write_env_key("NEW_AUTH_TOKEN", token)
 
 
+def _read_device_auth_token() -> str:
+    """Read NEW_AUTH_TOKEN from pi-main's .env if already set.
+
+    Returns empty string if the file is missing or the key is absent.
+    Used to detect whether this device has already registered with the
+    primary server and can re-register via X-Device-Auth instead of a
+    provisioning token.
+    """
+    try:
+        with open(PI_MAIN_ENV_PATH) as f:
+            for line in f:
+                if line.startswith("NEW_AUTH_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
 def _ensure_dir() -> None:
     created = not os.path.exists(CONFIG_DIR)
     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -1029,16 +1052,21 @@ async def _post_heartbeat(payload: dict) -> tuple[bool, str, str]:
     On failure, device_auth_token is an empty string.
     """
     token = payload.pop("token", "")
+    device_auth = _read_device_auth_token()
     body = json.dumps(payload).encode()
 
     def _do() -> tuple:
+        headers: dict = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if device_auth:
+            headers["X-Device-Auth"] = device_auth
+        else:
+            headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(
             HEARTBEAT_URL, data=body,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=HEARTBEAT_TIMEOUT) as r:
@@ -1284,10 +1312,11 @@ async def index(request):
     env = prefill.get("environment", "indoor")
 
     init_json = json.dumps({
-        "site":       init_site,
-        "asset":      init_asset,
-        "siteLocked":  site_locked,
-        "assetLocked": asset_locked,
+        "site":         init_site,
+        "asset":        init_asset,
+        "siteLocked":   site_locked,
+        "assetLocked":  asset_locked,
+        "hasDeviceAuth": bool(_read_device_auth_token()),
     })
 
     quote, author = _GANDALF_QUOTE
@@ -1315,7 +1344,7 @@ async def do_register(request):
     environment = data.get("environment", "indoor").strip()
     migrate     = bool(data.get("migrate", False))
 
-    if not (token and site and asset):
+    if not ((token or _read_device_auth_token()) and site and asset):
         return _json_response({"error": "Token, Site, and Asset are required."}, 400)
 
     legacy_resp: dict = {}
@@ -1383,7 +1412,7 @@ async def configure_wifi(request):
     environment = data.get("environment", "indoor").strip()
     migrate     = bool(data.get("migrate", False))
 
-    if not (token and site and asset):
+    if not ((token or _read_device_auth_token()) and site and asset):
         return _json_response({"error": "Token, Site, and Asset are required."}, 400)
 
     pre_verified = False
