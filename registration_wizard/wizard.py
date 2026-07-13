@@ -307,9 +307,9 @@ function init() {
   if (INIT.asset) { assetLockBtn.style.display = ''; }
   applyLock('site');
   applyLock('asset');
-  if (INIT.hasDeviceAuth) {
-    document.getElementById('token-label').textContent = 'Registration Token (optional)';
-    tokenEl().placeholder = 'Leave blank to re-register with existing device credentials';
+  if (INIT.hasDeviceAuth && INIT.site !== 'LEGACY') {
+    document.getElementById('token-label').style.display = 'none';
+    tokenEl().style.display = 'none';
   }
   update();
 }

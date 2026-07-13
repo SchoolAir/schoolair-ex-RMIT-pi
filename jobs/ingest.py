@@ -537,16 +537,28 @@ def _auth_headers() -> dict:
 
 
 async def _post_batch(client: httpx.AsyncClient, measurements: list[dict]) -> dict:
+    wifi_state   = _load_wifi_state()
+    pending_acks = wifi_state.get("pending_acks", [])
+    body: dict   = {"measurements": measurements}
+    if pending_acks:
+        body["wifi_acks"] = pending_acks
+
     res = await client.post(
         _PRIMARY_INGEST_URL,
         headers=_auth_headers(),
-        json={"measurements": measurements},
+        json=body,
     )
     if res.status_code == 401:
         print("Batch ingest failed: auth token rejected.")
         raise httpx.HTTPStatusError("Unauthorised", request=res.request, response=res)
     res.raise_for_status()
-    return res.json()
+    result = res.json()
+
+    if pending_acks:
+        wifi_state["pending_acks"] = []
+        _save_wifi_state(wifi_state)
+
+    return result
 
 
 async def _mirror_batch(measurements: list[dict]) -> None:
@@ -604,6 +616,97 @@ async def _trigger_update():
         print(f"[OTA] Update failed: {e}")
     finally:
         _update_in_progress = False
+
+
+# --------------------------- WiFi push ---------------------------
+
+_WIFI_STATE_FILE  = "config/wifi_state.json"
+_WIFI_CONN_PREFIX = "schoolair-"
+_WIFI_MAX_ENTRIES = 100
+_WIFI_PRUNE_KEEP  = 50  # keep newest N when pruning
+
+
+def _load_wifi_state() -> dict:
+    try:
+        return json.loads(Path(_WIFI_STATE_FILE).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"pending_acks": [], "managed": []}
+
+
+def _save_wifi_state(state: dict) -> None:
+    Path(_WIFI_STATE_FILE).write_text(json.dumps(state, indent=2))
+
+
+async def _nmcli_run(*args: str) -> bool:
+    """Run nmcli with the given arguments. Returns True on success."""
+    proc = await asyncio.create_subprocess_exec(
+        "nmcli", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        print(f"[wifi-push] nmcli {' '.join(str(a) for a in args[:4])} "
+              f"failed: {out.decode(errors='replace').strip()}")
+    return proc.returncode == 0
+
+
+async def _apply_wifi_credential(credential_id: int, ssid: str, password: str) -> bool:
+    """Append a new NM connection for ssid. Never removes existing connections."""
+    conn_name = f"{_WIFI_CONN_PREFIX}{credential_id}-{ssid[:30]}"
+    args = ["connection", "add", "type", "wifi",
+            "con-name", conn_name, "ssid", ssid]
+    if password:
+        args += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
+    ok = await _nmcli_run(*args)
+    if ok:
+        print(f"[wifi-push] Added '{conn_name}' (SSID '{ssid}')")
+    return ok
+
+
+async def _prune_wifi_if_needed(state: dict) -> None:
+    """Remove oldest SchoolAir-managed connections when count exceeds the cap."""
+    managed: list = state.get("managed", [])
+    if len(managed) <= _WIFI_MAX_ENTRIES:
+        return
+    managed.sort(key=lambda e: e.get("added_at", ""))
+    to_prune, keep = managed[:-_WIFI_PRUNE_KEEP], managed[-_WIFI_PRUNE_KEEP:]
+    for entry in to_prune:
+        await _nmcli_run("connection", "delete", entry["conn_name"])
+        print(f"[wifi-push] Pruned '{entry['conn_name']}'")
+    state["managed"] = keep
+
+
+async def _handle_wifi_push(push_list: list) -> None:
+    """Process wifi_push entries from an ingest response."""
+    if not push_list:
+        return
+    state   = _load_wifi_state()
+    managed: list = state.setdefault("managed", [])
+    pending: list = state.setdefault("pending_acks", [])
+    known   = {e["credential_id"] for e in managed}
+
+    for entry in push_list:
+        cred_id  = entry.get("credential_id")
+        ssid     = entry.get("ssid", "")
+        password = entry.get("password", "")
+        if cred_id is None or not ssid:
+            continue
+        if cred_id in known:
+            continue  # already applied, ack was already sent
+        success = await _apply_wifi_credential(cred_id, ssid, password)
+        pending.append({"credential_id": cred_id, "success": success})
+        if success:
+            managed.append({
+                "credential_id": cred_id,
+                "ssid":          ssid,
+                "conn_name":     f"{_WIFI_CONN_PREFIX}{cred_id}-{ssid[:30]}",
+                "added_at":      datetime.now(timezone.utc).isoformat(),
+            })
+            known.add(cred_id)
+
+    await _prune_wifi_if_needed(state)
+    _save_wifi_state(state)
 
 
 # --------------------------- Read step ---------------------------
@@ -766,6 +869,9 @@ async def _run_drain(settings: dict):
 
         if response.get("update_available"):
             asyncio.create_task(_trigger_update())
+
+        if response.get("wifi_push"):
+            asyncio.create_task(_handle_wifi_push(response["wifi_push"]))
 
         # Flush alert buffer now that we know we have connectivity
         await _drain_alerts()
