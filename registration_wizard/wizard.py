@@ -68,8 +68,10 @@ async def _track_activity(request):
     # If the Host isn't an IP or our known aliases, redirect to the portal so
     # the browser shows its "Sign in to network" notification bar.
     host = (request.headers.get("Host") or "").split(":")[0].lower().strip()
+    _FRIENDLY_HOSTS = {"localhost", "schoolair-register.local", "schoolair", "regiwiz"}
     if host and not re.match(r"^\d+\.\d+\.\d+\.\d+$", host) \
-             and host not in ("localhost", "schoolair-register.local"):
+             and not host.endswith(".local") \
+             and host not in _FRIENDLY_HOSTS:
         return Response("", status_code=302, headers={"Location": f"http://{AP_IP}/"})
 
 
@@ -146,6 +148,53 @@ def _wizard_emoji(gender: str) -> str:
 _GANDALF_QUOTE   = ("A wizard is never late. Nor is he early. He arrives precisely when he means to.", "Gandalf")
 _GLINDA_QUOTE    = ("You've always had the power, my dear. You just had to learn it for yourself.", "Glinda")
 _RAINE_QUOTE = ("Go. You know I can't stand an audience.", "Raine Whispers")
+
+
+# ── Device landing page (served at http://schoolair or http://schoolair.local) ─
+
+LANDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SchoolAir Device</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+     background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#fff;border-radius:16px;padding:2rem;max-width:400px;
+      width:100%;box-shadow:0 8px 32px rgba(0,0,0,.18)}
+h1{font-size:1.4rem;color:#1a56db;font-weight:700;text-align:center;margin-bottom:1.5rem}
+.row{display:flex;justify-content:space-between;align-items:baseline;
+     padding:.6rem 0;border-bottom:1px solid #f0f0f0}
+.row:last-of-type{border-bottom:none}
+.lbl{color:#666;font-size:.85rem}
+.val{font-weight:600;font-size:.95rem;text-align:right;max-width:60%;word-break:break-all}
+.badge{display:inline-block;padding:.2rem .6rem;border-radius:999px;
+       font-size:.78rem;font-weight:700}
+.badge-ok{background:#d1fae5;color:#065f46}
+.badge-warn{background:#fef3c7;color:#92400e}
+.btn{display:block;width:100%;margin-top:1.5rem;padding:.75rem;
+     background:#1a56db;color:#fff;border:none;border-radius:8px;
+     font-size:1rem;font-weight:600;cursor:pointer;text-align:center;
+     text-decoration:none}
+.btn:hover{background:#1e429f}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🌬️ SchoolAir Device</h1>
+  <div class="row"><span class="lbl">Hostname</span>
+    <span class="val">[[hostname]]</span></div>
+  <div class="row"><span class="lbl">Registration</span>
+    <span class="val">[[reg_badge]]</span></div>
+  [[site_row]]
+  [[asset_row]]
+  <a href="http://regiwiz" class="btn">Open Registration Wizard →</a>
+</div>
+</body>
+</html>"""
 
 
 # ── Page 1: Registration / Authentication ─────────────────────────────────────
@@ -1282,6 +1331,27 @@ async def _idle_watchdog() -> None:
 
 @app.route("/", methods=["GET"])
 async def index(request):
+    host = (request.headers.get("Host") or "").split(":")[0].lower().strip()
+    if host.startswith("schoolair") and host not in ("schoolair-register.local",):
+        # Serve the lightweight device info landing page.
+        wiz      = read_wizard_registration()
+        hostname = os.uname().nodename
+        if wiz:
+            badge    = '<span class="badge badge-ok">Registered</span>'
+            site_row = (f'<div class="row"><span class="lbl">Site</span>'
+                        f'<span class="val">{_html.escape(wiz.get("site",""))}</span></div>')
+            asset_row = (f'<div class="row"><span class="lbl">Asset</span>'
+                         f'<span class="val">{_html.escape(wiz.get("asset_name",""))}</span></div>')
+        else:
+            badge     = '<span class="badge badge-warn">Not registered</span>'
+            site_row  = ""
+            asset_row = ""
+        body = LANDING_HTML.replace("[[hostname]]", _html.escape(hostname)) \
+                           .replace("[[reg_badge]]", badge) \
+                           .replace("[[site_row]]", site_row) \
+                           .replace("[[asset_row]]", asset_row)
+        return _html_response(body)
+
     wiz = read_wizard_registration()
     nr  = read_node_red_registration()
 

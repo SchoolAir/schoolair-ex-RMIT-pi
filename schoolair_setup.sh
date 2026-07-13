@@ -253,24 +253,53 @@ mkdir -p /etc/NetworkManager/dnsmasq-shared.d
 cat > /etc/NetworkManager/dnsmasq-shared.d/schoolair-captive.conf << EOF
 address=/#/${AP_IP}
 address=/schoolair-register.local/${AP_IP}
+address=/schoolair/${AP_IP}
+address=/regiwiz/${AP_IP}
 EOF
 systemctl reload NetworkManager 2>/dev/null || systemctl restart NetworkManager
 ok "Captive-portal DNS config written"
 
 # ── 11. Avahi ─────────────────────────────────────────────────────────────────
-step "11 / Avahi  →  schoolair-register.local"
+step "11 / Avahi  →  schoolair.local + regiwiz.local"
 mkdir -p /etc/avahi/services
+
+# Default device service — uses the device's own hostname (schoolair-XXXX.local)
 cat > /etc/avahi/services/schoolair.service << 'EOF'
 <?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
-  <name>SchoolAir Registration Portal</name>
+  <name>SchoolAir Device</name>
   <service><type>_http._tcp</type><port>80</port></service>
 </service-group>
 EOF
+
+# Friendly aliases — schoolair.local → dashboard, regiwiz.local → wizard.
+# Avahi publishes an A record for each host-name so browsers can reach the
+# device without knowing its unique hostname.  On a multi-device network,
+# Avahi resolves conflicts by appending -2, -3, etc.
+cat > /etc/avahi/services/schoolair-aliases.service << 'EOF'
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name>SchoolAir (schoolair.local)</name>
+  <host-name>schoolair.local</host-name>
+  <service><type>_http._tcp</type><port>80</port></service>
+</service-group>
+EOF
+
+cat > /etc/avahi/services/regiwiz-alias.service << 'EOF'
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name>SchoolAir Wizard (regiwiz.local)</name>
+  <host-name>regiwiz.local</host-name>
+  <service><type>_http._tcp</type><port>80</port></service>
+</service-group>
+EOF
+
 systemctl enable --quiet avahi-daemon
 systemctl restart avahi-daemon
-ok "Avahi configured"
+ok "Avahi configured (schoolair.local + regiwiz.local)"
 
 # ── 12. dhcpcd (Bullseye only) ────────────────────────────────────────────────
 if [ -f /etc/dhcpcd.conf ]; then
