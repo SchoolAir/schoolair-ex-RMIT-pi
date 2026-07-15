@@ -24,19 +24,25 @@ echo    "    User: ${ADMIN_USER}  |  Home: ${ADMIN_HOME}"
 
 # ── 1. Stop services ──────────────────────────────────────────────────────────
 step "Stopping services"
-for svc in schoolair-wizard schoolair-launcher schoolair nodered sen6x nginx; do
+for svc in schoolair-wizard schoolair-launcher schoolair schoolair-netwatch nodered sen6x nginx; do
     sudo systemctl stop "$svc" 2>/dev/null && ok "Stopped $svc" || true
 done
 
 # ── 2. Device identity & registration state ───────────────────────────────────
 step "Removing device identity"
-# New-style: clear AUTH_TOKEN from the app's .env
+# Reset .env: copy from .env.example (drops any appended device-specific keys
+# like NEW_AUTH_TOKEN and NEW_SERVER_URL that the wizard appends).
+# Fallback sed path clears all three auth keys individually.
 if [ -f "${SCHOOLAIR_DIR}/.env.example" ]; then
     cp "${SCHOOLAIR_DIR}/.env.example" "${SCHOOLAIR_DIR}/.env"
-    ok ".env reset to defaults (AUTH_TOKEN cleared)"
+    ok ".env reset to defaults from .env.example"
 elif [ -f "${SCHOOLAIR_DIR}/.env" ]; then
-    sed -i 's/^AUTH_TOKEN=.*/AUTH_TOKEN=/' "${SCHOOLAIR_DIR}/.env"
-    ok "AUTH_TOKEN cleared from .env"
+    sed -i \
+        -e 's/^AUTH_TOKEN=.*/AUTH_TOKEN=/' \
+        -e '/^NEW_AUTH_TOKEN=/d' \
+        -e '/^NEW_SERVER_URL=/d' \
+        "${SCHOOLAIR_DIR}/.env"
+    ok "AUTH_TOKEN / NEW_AUTH_TOKEN / NEW_SERVER_URL cleared from .env"
 fi
 # Old-style wizard state (backwards-compatible with install_files-based deployments)
 rm -f "${ADMIN_HOME}/.device_token"
@@ -45,13 +51,23 @@ rm -f "${ADMIN_HOME}/.config/schoolair/staging.json"
 rm -f "${ADMIN_HOME}/.config/schoolair/last_error.txt"
 ok "Device token and wizard state cleared"
 
-# ── 3. Clear runtime database ─────────────────────────────────────────────────
-step "Clearing runtime database"
+# ── 3. Clear runtime database and per-device config ───────────────────────────
+step "Clearing runtime database and per-device state"
 rm -f "${SCHOOLAIR_DIR}/queue.db" \
       "${SCHOOLAIR_DIR}/queue.db-shm" \
       "${SCHOOLAIR_DIR}/queue.db-wal"
 rm -f "${SCHOOLAIR_DIR}/spike_state.json"
-ok "SQLite queue and runtime state cleared"
+ok "SQLite queue cleared"
+# settings.json holds drain_jitter_seconds — a per-device random offset that
+# must be unique per clone. Delete it so each clone generates its own.
+rm -f "${SCHOOLAIR_DIR}/config/settings.json"
+ok "config/settings.json removed (clone will generate unique drain jitter)"
+# criteria.json is pushed by the server on first ingest; don't bake in stale thresholds.
+rm -f "${SCHOOLAIR_DIR}/config/criteria.json"
+ok "config/criteria.json removed (will be fetched from server after registration)"
+# wifi_state.json tracks WiFi push credential_ids and pending acks.
+rm -f "${SCHOOLAIR_DIR}/config/wifi_state.json"
+ok "config/wifi_state.json removed (WiFi push state cleared)"
 
 # ── 4. nginx: ensure disabled so wizard owns port 80 on first boot ────────────
 step "Resetting nginx to disabled"
@@ -112,13 +128,19 @@ sudo rm -f /etc/ssh/ssh_host_*
 sudo systemctl enable regenerate_ssh_host_keys.service 2>/dev/null || true
 ok "Keys removed — regenerate_ssh_host_keys.service re-enabled for next boot"
 
-# ── 10. Logs and shell history ────────────────────────────────────────────────
+# ── 10. Logs, journald, and shell history ─────────────────────────────────────
 step "Wiping logs and shell history"
 sudo find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
 sudo truncate -s 0 /var/log/schoolair-setup.log 2>/dev/null || true
+# Vacuum journald so systemd unit logs from this device don't appear on clones.
+sudo journalctl --vacuum-time=1s 2>/dev/null || true
+ok "Flat logs and journald vacuumed"
+# Clear SSH known_hosts so clones don't carry this device's server fingerprints.
+rm -f "${ADMIN_HOME}/.ssh/known_hosts"
+ok "SSH known_hosts cleared"
 cat /dev/null > "${ADMIN_HOME}/.bash_history"
 history -c 2>/dev/null || true
-ok "Logs and history cleared"
+ok "Shell history cleared"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo
