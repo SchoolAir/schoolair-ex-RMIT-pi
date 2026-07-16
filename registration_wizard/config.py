@@ -3,6 +3,7 @@
 
 # Primary (AWS) server registration endpoint
 HEARTBEAT_URL     = "http://54.252.165.86:3000/aqc/v1/register"
+NEW_SERVER_BASE_URL = "http://54.252.165.86:3000"
 HEARTBEAT_TIMEOUT = 15  # seconds
 
 # Local storage

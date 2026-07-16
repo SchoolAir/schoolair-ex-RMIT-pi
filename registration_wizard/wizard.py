@@ -25,6 +25,7 @@ from config import (
     ERROR_FILE,
     HEARTBEAT_TIMEOUT,
     HEARTBEAT_URL,
+    NEW_SERVER_BASE_URL,
     NODE_RED_TOKEN_FILE,
     PI_MAIN_ENV_PATH,
     SERVER_PORT,
@@ -789,13 +790,12 @@ def _write_auth_token(token: str) -> None:
 
 
 def _write_new_auth_token(token: str) -> None:
-    """Write NEW_AUTH_TOKEN (primary AWS server) into pi-main's .env.
+    """Write NEW_AUTH_TOKEN and NEW_SERVER_URL into pi-main's .env.
 
-    This is the device-specific token issued by the server on registration —
-    not the org provisioning token used to make the request.  The ingest
-    service reads this key to authenticate every drain.
+    Both keys are needed for ingest to reach the primary AWS server.
     """
     _write_env_key("NEW_AUTH_TOKEN", token)
+    _write_env_key("NEW_SERVER_URL", NEW_SERVER_BASE_URL)
 
 
 def _read_device_auth_token() -> str:
