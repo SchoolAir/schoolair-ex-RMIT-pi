@@ -25,7 +25,7 @@ from datetime import datetime, timezone, timedelta, time
 from pathlib import Path
 import httpx
 from dotenv import load_dotenv
-from services.sensor import read_sensor, extract_metric
+from services.sensor import read_sensor, extract_metric, sanitize_reading
 import db.queue as queue
 import jobs.aggregate as aggregate
 import state
@@ -826,7 +826,7 @@ async def _run_drain(settings: dict):
     payload = [
         {
             "recorded_at":   item["recorded_at"],
-            "data":          item["data"],
+            "data":          sanitize_reading(item["data"], item["recorded_at"]),
             "is_aggregated": False,
             "severity":      item.get("severity", 0),
         }
@@ -834,7 +834,7 @@ async def _run_drain(settings: dict):
     ] + [
         {
             "recorded_at":   r["recorded_at"],
-            "data":          json.loads(r["data"]),
+            "data":          sanitize_reading(json.loads(r["data"]), r["recorded_at"]),
             "is_aggregated": bool(r["is_aggregated"]),
         }
         for r in sqlite_rows

@@ -9,6 +9,29 @@ import json
 import subprocess
 import os
 
+# Sensirion SEN6x: known sentinel values that indicate "metric not available".
+# These are hardware/firmware codes, never real measurements.
+#   CO2  — 65535 (0xFFFF) when measurement hasn't started or is unavailable
+#   VOC/NOx index — 0 during initial conditioning (can last hours on a fresh sensor)
+_SENTINELS: dict[str, tuple[float, ...]] = {
+    "co2": (65535.0,),
+    "voc": (0.0,),
+    "nox": (0.0,),
+}
+
+# Valid physical ranges per metric. Values outside these are impossible and
+# indicate a hardware fault. Temperature and humidity are excluded: temp can
+# legitimately be negative, and neither has a known startup sentinel.
+_VALID_RANGES: dict[str, tuple[float, float]] = {
+    "co2":   (0.0,   40000.0),
+    "voc":   (1.0,   500.0),
+    "nox":   (1.0,   500.0),
+    "pm10":  (0.0,   1000.0),
+    "pm25":  (0.0,   1000.0),
+    "pm40":  (0.0,   1000.0),
+    "pm100": (0.0,   1000.0),
+}
+
 SCRIPT = os.getenv("MOCK_SENSOR_SCRIPT", "./read-sensor.sh")
 
 # Re-init is skipped in mock/dev mode (MOCK_SENSOR_SCRIPT set) because there
@@ -52,6 +75,41 @@ def extract_metric(data: dict, metric: str) -> float | None:
         if isinstance(val, (int, float)):
             return float(val)
     return None
+
+
+def sanitize_reading(data: dict, recorded_at: str = "") -> dict:
+    """Return a sanitized copy of a sensor reading for transmission.
+
+    Raw values are preserved in the buffer/SQLite so the breach-alert
+    pipeline can still detect persistent sensor faults. This copy is what
+    gets sent to the server: sentinel and out-of-range values are replaced
+    with their negative (or -1 for zero) so the server knows the metric was
+    captured but invalid for that sample.
+    """
+    result: dict = {}
+    for sensor_name, sensor_data in data.items():
+        if not isinstance(sensor_data, dict):
+            result[sensor_name] = sensor_data
+            continue
+        clean = dict(sensor_data)
+        for metric, val in sensor_data.items():
+            if not isinstance(val, (int, float)):
+                continue
+            f = float(val)
+            flagged = False
+            sentinels = _SENTINELS.get(metric, ())
+            if any(f == s for s in sentinels):
+                flagged = True
+            elif metric in _VALID_RANGES:
+                lo, hi = _VALID_RANGES[metric]
+                if not (lo <= f <= hi):
+                    flagged = True
+            if flagged:
+                clean[metric] = -f if f != 0.0 else -1.0
+                label = f" ({recorded_at})" if recorded_at else ""
+                print(f"[sensor] flagged {metric}={f} → {clean[metric]}{label}")
+        result[sensor_name] = clean
+    return result
 
 
 def read_sensor() -> dict:
