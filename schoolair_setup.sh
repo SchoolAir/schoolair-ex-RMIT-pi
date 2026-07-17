@@ -253,6 +253,8 @@ mkdir -p /etc/NetworkManager/dnsmasq-shared.d
 cat > /etc/NetworkManager/dnsmasq-shared.d/schoolair-captive.conf << EOF
 address=/#/${AP_IP}
 address=/schoolair-register.local/${AP_IP}
+address=/schoolair.local/${AP_IP}
+address=/regiwiz.local/${AP_IP}
 address=/schoolair/${AP_IP}
 address=/regiwiz/${AP_IP}
 EOF
