@@ -9,27 +9,32 @@ import json
 import subprocess
 import os
 
-# Sensirion SEN6x: known sentinel values that indicate "metric not available".
-# These are hardware/firmware codes, never real measurements.
-#   CO2  — 65535 (0xFFFF) when measurement hasn't started or is unavailable
-#   VOC/NOx index — 0 during initial conditioning (can last hours on a fresh sensor)
+# Sensirion SEN6x sentinel values per datasheet Table 22 (Read Measured Values SEN66):
+#   uint16 metrics (PM*, CO2): sentinel = 0xFFFF = 65535
+#   int16  metrics (temp, humidity, VOC, NOx): sentinel = 0x7FFF = 32767
+# After the binary applies scaling factors these become:
+#   CO2:      65535 ppm   (no scaling)  → caught by explicit sentinel check below
+#   VOC/NOx:  3276.7      (÷10)         → caught by range check (valid 1–500)
+#   humidity: 327.67 %RH (÷100)        → caught by range check (valid 0–100)
+#   PM*:      6553.5 µg/m³ (÷10)       → caught by range check (valid 0–1000)
+#   temp:     163.8 °C   (÷200)        → excluded: negating a legitimate negative
+#                                          temp produces a valid-looking positive
 _SENTINELS: dict[str, tuple[float, ...]] = {
-    "co2": (65535.0,),
-    "voc": (0.0,),
-    "nox": (0.0,),
+    "co2": (65535.0,),   # 0xFFFF — also caught by range, but explicit for clarity
 }
 
-# Valid physical ranges per metric. Values outside these are impossible and
-# indicate a hardware fault. Temperature and humidity are excluded: temp can
-# legitimately be negative, and neither has a known startup sentinel.
+# Valid physical ranges per metric. Out-of-range values are flagged the same way
+# as sentinels (negated). Temperature is excluded because it can legitimately be
+# negative, and negating a below-zero reading produces a positive that looks valid.
 _VALID_RANGES: dict[str, tuple[float, float]] = {
-    "co2":   (0.0,   40000.0),
-    "voc":   (1.0,   500.0),
-    "nox":   (1.0,   500.0),
-    "pm10":  (0.0,   1000.0),
-    "pm25":  (0.0,   1000.0),
-    "pm40":  (0.0,   1000.0),
-    "pm100": (0.0,   1000.0),
+    "co2":      (0.0,   40000.0),
+    "voc":      (1.0,   500.0),
+    "nox":      (1.0,   500.0),
+    "humidity": (0.0,   100.0),
+    "pm10":     (0.0,   1000.0),
+    "pm25":     (0.0,   1000.0),
+    "pm40":     (0.0,   1000.0),
+    "pm100":    (0.0,   1000.0),
 }
 
 SCRIPT = os.getenv("MOCK_SENSOR_SCRIPT", "./read-sensor.sh")
