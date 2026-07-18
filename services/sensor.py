@@ -9,34 +9,6 @@ import json
 import subprocess
 import os
 
-# Sensirion SEN6x sentinel values per datasheet Table 22 (Read Measured Values SEN66):
-#   uint16 metrics (PM*, CO2): sentinel = 0xFFFF = 65535
-#   int16  metrics (temp, humidity, VOC, NOx): sentinel = 0x7FFF = 32767
-# After the binary applies scaling factors these become:
-#   CO2:      65535 ppm   (no scaling)  → caught by explicit sentinel check below
-#   VOC/NOx:  3276.7      (÷10)         → caught by range check (valid 1–500)
-#   humidity: 327.67 %RH (÷100)        → caught by range check (valid 0–100)
-#   PM*:      6553.5 µg/m³ (÷10)       → caught by range check (valid 0–1000)
-#   temp:     163.8 °C   (÷200)        → excluded: negating a legitimate negative
-#                                          temp produces a valid-looking positive
-_SENTINELS: dict[str, tuple[float, ...]] = {
-    "co2": (65535.0,),   # 0xFFFF — also caught by range, but explicit for clarity
-}
-
-# Valid physical ranges per metric. Out-of-range values are flagged the same way
-# as sentinels (negated). Temperature is excluded because it can legitimately be
-# negative, and negating a below-zero reading produces a positive that looks valid.
-_VALID_RANGES: dict[str, tuple[float, float]] = {
-    "co2":      (0.0,   40000.0),
-    "voc":      (1.0,   500.0),
-    "nox":      (1.0,   500.0),
-    "humidity": (0.0,   100.0),
-    "pm10":     (0.0,   1000.0),
-    "pm25":     (0.0,   1000.0),
-    "pm40":     (0.0,   1000.0),
-    "pm100":    (0.0,   1000.0),
-}
-
 SCRIPT = os.getenv("MOCK_SENSOR_SCRIPT", "./read-sensor.sh")
 
 # Re-init is skipped in mock/dev mode (MOCK_SENSOR_SCRIPT set) because there
@@ -80,41 +52,6 @@ def extract_metric(data: dict, metric: str) -> float | None:
         if isinstance(val, (int, float)):
             return float(val)
     return None
-
-
-def sanitize_reading(data: dict, recorded_at: str = "") -> dict:
-    """Return a sanitized copy of a sensor reading for transmission.
-
-    Raw values are preserved in the buffer/SQLite so the breach-alert
-    pipeline can still detect persistent sensor faults. This copy is what
-    gets sent to the server: sentinel and out-of-range values are replaced
-    with their negative (or -1 for zero) so the server knows the metric was
-    captured but invalid for that sample.
-    """
-    result: dict = {}
-    for sensor_name, sensor_data in data.items():
-        if not isinstance(sensor_data, dict):
-            result[sensor_name] = sensor_data
-            continue
-        clean = dict(sensor_data)
-        for metric, val in sensor_data.items():
-            if not isinstance(val, (int, float)):
-                continue
-            f = float(val)
-            flagged = False
-            sentinels = _SENTINELS.get(metric, ())
-            if any(f == s for s in sentinels):
-                flagged = True
-            elif metric in _VALID_RANGES:
-                lo, hi = _VALID_RANGES[metric]
-                if not (lo <= f <= hi):
-                    flagged = True
-            if flagged:
-                clean[metric] = -f if f != 0.0 else -1.0
-                label = f" ({recorded_at})" if recorded_at else ""
-                print(f"[sensor] flagged {metric}={f} → {clean[metric]}{label}")
-        result[sensor_name] = clean
-    return result
 
 
 def read_sensor() -> dict:
